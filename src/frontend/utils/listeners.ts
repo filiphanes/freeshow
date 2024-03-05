@@ -13,6 +13,7 @@ import {
     folders,
     groups,
     media,
+    mediaCache,
     midiIn,
     openedFolders,
     outputs,
@@ -25,6 +26,7 @@ import {
     stageShows,
     styles,
     templates,
+    timeFormat,
     timers,
     transitionData,
     variables,
@@ -35,6 +37,7 @@ import { midiInListen } from "./midi"
 import { convertBackgrounds } from "./remoteTalk"
 import { send } from "./request"
 import { eachConnection, sendData, timedout } from "./sendData"
+import { getActiveOutputs } from "../components/helpers/output"
 
 export function listenForUpdates() {
     shows.subscribe((data) => {
@@ -105,10 +108,16 @@ export function listenForUpdates() {
     })
 
     draw.subscribe((data) => {
-        send(OUTPUT, ["DRAW"], data)
+        let activeOutputs = getActiveOutputs()
+        activeOutputs.forEach((id) => {
+            send(OUTPUT, ["DRAW"], { id, data })
+        })
     })
     drawTool.subscribe((data) => {
-        send(OUTPUT, ["DRAW_TOOL"], data)
+        let activeOutputs = getActiveOutputs()
+        activeOutputs.forEach((id) => {
+            send(OUTPUT, ["DRAW_TOOL"], { id, data })
+        })
     })
     drawSettings.subscribe((data) => {
         send(OUTPUT, ["DRAW_SETTINGS"], data)
@@ -121,9 +130,13 @@ export function listenForUpdates() {
     // activeTimers.subscribe((data) => {
     //     send(OUTPUT, ["ACTIVE_TIMERS"], data)
     // })
-    // WIP not used?!
+
+    // used by stage output
     media.subscribe((data) => {
         send(OUTPUT, ["MEDIA"], data)
+    })
+    mediaCache.subscribe((data) => {
+        send(OUTPUT, ["MEDIA_CACHE"], data)
     })
 
     timers.subscribe((data) => {
@@ -141,6 +154,10 @@ export function listenForUpdates() {
         send(OUTPUT, ["VOLUME"], data)
     })
     // WIP send gain!!
+
+    timeFormat.subscribe((a) => {
+        send(OUTPUT, ["TIME_FORMAT"], a)
+    })
 
     projects.subscribe(() => {
         sendData(REMOTE, { channel: "PROJECTS" }, true)

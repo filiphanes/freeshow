@@ -5,12 +5,17 @@ import { app, dialog, shell } from "electron"
 import { ExifImage } from "exif"
 import fs from "fs"
 import { Stats } from "original-fs"
-import path from "path"
+import path, { join, parse } from "path"
 import { FILE_INFO, MAIN, OPEN_FOLDER, READ_FOLDER, SHOW, STORE } from "../../types/Channels"
 import { OPEN_FILE, READ_EXIF } from "./../../types/Channels"
 import { mainWindow, toApp } from "./../index"
+import { getAllShows, trimShow } from "./responses"
 import { stores } from "./store"
-import { trimShow } from "./responses"
+import { uid } from "uid"
+
+function actionComplete(err: Error | null, actionFailedMessage: string) {
+    if (err) console.error(actionFailedMessage + ":", err)
+}
 
 // GENERAL
 
@@ -18,7 +23,7 @@ export function doesPathExist(path: string): boolean {
     try {
         return fs.existsSync(path)
     } catch (err: any) {
-        console.error("Error when checking path:", err)
+        actionComplete(err, "Error when checking path")
     }
 
     return false
@@ -28,7 +33,7 @@ export function readFile(path: string, encoding: BufferEncoding = "utf8"): strin
     try {
         return fs.readFileSync(path, encoding)
     } catch (err: any) {
-        console.error("Error when reading file:", err)
+        actionComplete(err, "Error when reading file")
         return ""
     }
 }
@@ -37,7 +42,7 @@ export function readFolder(path: string): string[] {
     try {
         return fs.readdirSync(path)
     } catch (err: any) {
-        console.error("Error when reading folder:", err)
+        actionComplete(err, "Error when reading folder")
         return []
     }
 }
@@ -47,30 +52,20 @@ export function writeFile(path: string, content: string | NodeJS.ArrayBufferView
     if (fileContentMatches(content, path)) return
 
     fs.writeFile(path, content, (err) => {
-        if (err) {
-            if (id) toApp(SHOW, { error: "no_write", err, id })
-            console.error("Error when writing to file: ", err)
-        }
+        actionComplete(err, "Error when writing to file")
+        if (err && id) toApp(SHOW, { error: "no_write", err, id })
     })
 }
 
 export function deleteFile(path: string) {
-    fs.unlink(path, (err) => {
-        if (err) {
-            console.error("Could not delete file:", err)
-        }
-    })
+    fs.unlink(path, (err) => actionComplete(err, "Could not delete file"))
 }
 
 export function renameFile(p: string, oldName: string, newName: string) {
     let oldPath = path.join(p, oldName)
     let newPath = path.join(p, newName)
 
-    fs.rename(oldPath, newPath, (err) => {
-        if (err) {
-            console.error("Could not delete file:", err)
-        }
-    })
+    fs.rename(oldPath, newPath, (err) => actionComplete(err, "Could not rename file"))
 }
 
 export function getFileStats(p: string) {
@@ -78,7 +73,7 @@ export function getFileStats(p: string) {
         const stat: Stats = fs.statSync(p)
         return { path: p, stat, extension: path.extname(p).substring(1), folder: stat.isDirectory() }
     } catch (err) {
-        console.error("Error when getting file stats: ", err)
+        actionComplete(err, "Error when getting file stats")
         return null
     }
 }
@@ -89,6 +84,7 @@ export function selectFilesDialog(title: string = "", filters: any, multiple: bo
     let options: any = { properties: ["openFile"], filters: [{ name: filters.name, extensions: filters.extensions }] }
     if (title) options.title = title
     if (multiple) options.properties.push("multiSelections")
+
     let files: string[] = dialog.showOpenDialogSync(mainWindow!, options) || []
     return files
 }
@@ -97,6 +93,7 @@ export function selectFolderDialog(title: string = "", defaultPath: string = "")
     let options: any = { properties: ["openDirectory"] }
     if (title) options.title = title
     if (defaultPath) options.defaultPath = defaultPath
+
     let path: string[] = dialog.showOpenDialogSync(mainWindow!, options) || [""]
     return path[0]
 }
@@ -104,17 +101,14 @@ export function selectFolderDialog(title: string = "", defaultPath: string = "")
 // DATA FOLDERS
 
 export function openSystemFolder(path: string) {
-    if (!doesPathExist(path)) {
-        toApp(MAIN, { channel: "ALERT", data: "This does not exist!" })
-        return
-    }
+    if (!doesPathExist(path)) return toApp(MAIN, { channel: "ALERT", data: "This does not exist!" })
 
     shell.openPath(path)
 }
 
-const appName = "FreeShow"
+const appFolderName = "FreeShow"
 export function getDocumentsFolder(p: any = null, folderName: string = "Shows"): string {
-    let folderPath = [app.getPath("documents"), appName]
+    let folderPath = [app.getPath("documents"), appFolderName]
     if (folderName) folderPath.push(folderName)
     if (!p) p = path.resolve(...folderPath)
     if (!doesPathExist(p)) p = fs.mkdirSync(p, { recursive: true })
@@ -163,30 +157,17 @@ export function fileContentMatches(content: string | NodeJS.ArrayBufferView, pat
 }
 
 export function loadFile(p: string, contentId: string = ""): any {
-    let content: any = "{}"
-
     if (!doesPathExist(p)) return { error: "not_found", id: contentId }
 
-    content = readFile(p)
+    let content: string = readFile(p)
     if (!content) return { error: "not_found", id: contentId }
 
-    try {
-        content = JSON.parse(content)
-    } catch (error) {
-        // try to fix broken show files
-        content = content.slice(0, content.indexOf("}}]") + 3)
+    let show = parseShow(content)
+    if (!show) return { error: "not_found", id: contentId }
 
-        try {
-            content = JSON.parse(content)
-        } catch (error) {
-            console.log(error)
-            return { error: "not_found", id: contentId }
-        }
-    }
+    if (contentId && show[0] !== contentId) show[0] = contentId
 
-    if (contentId && content[0] !== contentId) return { error: "not_found", id: contentId, file_id: content[0] }
-
-    return { id: contentId, content }
+    return { id: contentId, content: show }
 }
 
 export function getPaths(): any {
@@ -229,19 +210,77 @@ export function getFolderContent(_e: any, data: any) {
     let filesInFolders: string[] = []
     if (data.listFilesInFolders) {
         let folders: any[] = files.filter((a) => a.folder)
-        folders.forEach((folder) => {
-            let fileList: string[] = readFolder(folder.path)
-            if (!fileList.length) return
+        folders.forEach(getFilesInFolder)
+    }
 
-            for (const name of fileList) {
-                let p: string = path.join(folder.path, name)
-                let stats: any = getFileStats(p)
-                if (stats && !stats.folder) filesInFolders.push({ ...stats, name })
-            }
-        })
+    function getFilesInFolder(folder: any) {
+        let fileList: string[] = readFolder(folder.path)
+        if (!fileList.length) return
+
+        for (const name of fileList) {
+            let p: string = path.join(folder.path, name)
+            let stats: any = getFileStats(p)
+            if (stats && !stats.folder) filesInFolders.push({ ...stats, name })
+        }
     }
 
     toApp(READ_FOLDER, { path: folderPath, files, filesInFolders })
+}
+
+export function getSimularPaths(data: any) {
+    let parentFolderPathNames = data.paths.map(getParentFolderName)
+    let allFilePaths = parentFolderPathNames.map((parentPath: string) => readFolder(parentPath).map((a) => join(parentPath, a)))
+    allFilePaths = [...new Set(allFilePaths.flat())]
+
+    let simularArray: any[] = []
+    data.paths.forEach((path: string) => {
+        let originalFileName = parse(path).name
+
+        allFilePaths.forEach((filePath: string) => {
+            let name = parse(filePath).name
+            if (data.paths.includes(filePath) || simularArray.find((a) => a[0].name.includes(name))) return
+
+            let match = similarity(originalFileName, name)
+            if (match < 0.5) return
+
+            simularArray.push([{ path: filePath, name }, match])
+        })
+    })
+
+    simularArray = simularArray.sort((a, b) => b[1] - a[1])
+    simularArray = simularArray.slice(0, 10).map((a) => a[0])
+
+    return simularArray
+}
+function getParentFolderName(path: string) {
+    return parse(path).dir
+}
+function similarity(str1: string, str2: string) {
+    function levenshteinDistance(s1: string, s2: string) {
+        const m = s1.length
+        const n = s2.length
+        const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+
+        for (let i = 0; i <= m; i++) {
+            for (let j = 0; j <= n; j++) {
+                if (i === 0) {
+                    dp[i][j] = j
+                } else if (j === 0) {
+                    dp[i][j] = i
+                } else {
+                    dp[i][j] = s1[i - 1] === s2[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+                }
+            }
+        }
+
+        return dp[m][n]
+    }
+
+    const distance = levenshteinDistance(str1, str2)
+    const maxLength = Math.max(str1.length, str2.length)
+    const matchPercentage = 1 - distance / maxLength
+
+    return matchPercentage
 }
 
 // OPEN_FOLDER
@@ -258,25 +297,24 @@ export function selectFolder(e: any, msg: { channel: string; title: string | und
 
     if (msg.channel === "SHOWS") {
         loadShows({ showsPath: folder })
-        toApp(MAIN, { channel: "FULL_SHOWS_LIST", data: readFolder(folder) })
+        toApp(MAIN, { channel: "FULL_SHOWS_LIST", data: getAllShows({ path: folder }) })
     }
 
     e.reply(OPEN_FOLDER, { channel: msg.channel, data: { path: folder } })
 }
 
 // OPEN_FILE
-export function selectFiles(e: any, msg: { channel: string; title?: string; filter: any; multiple: boolean; read?: boolean }) {
+export function selectFiles(e: any, msg: { id: string; channel: string; title?: string; filter: any; multiple: boolean; read?: boolean }) {
     let files: any = selectFilesDialog(msg.title, msg.filter, msg.multiple === undefined ? true : msg.multiple)
-    if (files) {
-        let content: any = {}
-        if (msg.read) {
-            files.forEach((path: string) => {
-                content[path] = readFile(path)
-            })
-        }
+    if (!files) return
 
-        e.reply(OPEN_FILE, { channel: msg.channel || "", data: { files, content } })
+    let content: any = {}
+    if (msg.read) files.forEach(getContent)
+    function getContent(path: string) {
+        content[path] = readFile(path)
     }
+
+    e.reply(OPEN_FILE, { channel: msg.channel || "", data: { id: msg.id, files, content } })
 }
 
 // FILE_INFO
@@ -288,12 +326,12 @@ export function getFileInfo(e: any, filePath: string) {
 // READ EXIF
 export function readExifData(e: any, data: any) {
     try {
-        new ExifImage({ image: data.id }, function (error, exifData) {
-            if (error) console.log("Error: " + error.message)
-            else e.reply(READ_EXIF, { ...data, exif: exifData })
+        new ExifImage({ image: data.id }, (err, exifData) => {
+            actionComplete(err, "Error getting EXIF data")
+            if (!err) e.reply(READ_EXIF, { ...data, exif: exifData })
         })
-    } catch (error) {
-        console.log("Error: " + error.message)
+    } catch (err) {
+        actionComplete(err, "Error loading EXIF image")
     }
 }
 
@@ -358,35 +396,51 @@ export function loadShows({ showsPath }: any) {
 
     for (const name of filesInFolder) checkShow(name)
     function checkShow(name: string) {
-        if (!name.includes(".show")) return
+        if (!name.toLowerCase().includes(".show")) return
 
-        let matchingShowId = Object.entries(cachedShows).find(([_id, a]: any) => a.name === name)?.[0]
-        if (matchingShowId) {
+        let trimmedName = name.slice(0, -5) // remove .show
+
+        // no name results in the id trying to be read leading to show not found
+        if (!trimmedName) return
+
+        let matchingShowId = Object.entries(cachedShows).find(([_id, a]: any) => a.name === trimmedName)?.[0]
+        if (matchingShowId && !newCachedShows[matchingShowId]) {
             newCachedShows[matchingShowId] = cachedShows[matchingShowId]
             return
         }
 
         let p: string = path.join(showsPath, name)
         let jsonData = readFile(p) || "{}"
-        let show = null
-
-        try {
-            show = JSON.parse(jsonData)
-        } catch (error) {
-            // try to fix broken files
-            jsonData = jsonData.slice(0, jsonData.indexOf("}}]") + 3)
-
-            try {
-                show = JSON.parse(jsonData)
-            } catch (error) {
-                console.error("Error parsing show " + name)
-            }
-        }
+        let show = parseShow(jsonData)
 
         if (!show || !show[1]) return
 
-        newCachedShows[show[0]] = trimShow({ ...show[1], name: name.replace(".show", "") })
+        let id = show[0]
+        // some old duplicated shows might have the same id
+        if (newCachedShows[id]) id = uid()
+
+        newCachedShows[id] = trimShow({ ...show[1], name: trimmedName })
     }
 
     toApp(STORE, { channel: "SHOWS", data: newCachedShows })
+}
+
+export function parseShow(jsonData: string) {
+    let show = null
+
+    try {
+        show = JSON.parse(jsonData)
+    } catch (error) {
+        // try to fix broken files
+        jsonData = jsonData.slice(0, jsonData.indexOf("}}]") + 3)
+
+        // try again
+        try {
+            show = JSON.parse(jsonData)
+        } catch (err) {
+            console.error("Error parsing show")
+        }
+    }
+
+    return show
 }

@@ -1,7 +1,9 @@
 <script lang="ts">
+    import { onDestroy } from "svelte"
     import { MAIN } from "../../../../types/Channels"
     import { outLocked, outputs } from "../../../stores"
-    import { receive, send } from "../../../utils/request"
+    import { destroy, receive, send } from "../../../utils/request"
+    import { clone } from "../../helpers/array"
     import { getActiveOutputs, setOutput } from "../../helpers/output"
     import T from "../../helpers/T.svelte"
     import Center from "../../system/Center.svelte"
@@ -12,26 +14,15 @@
 
     let windows: any[] = []
     send(MAIN, ["GET_WINDOWS"])
-    receive(MAIN, {
-        GET_WINDOWS: (d: any) => {
-            // set freeshow last
-            // let index = d.findIndex((a: any) => a.name === "FreeShow")
-            // if (index >= 0) {
-            //   let thisWindow = d.splice(index, 1)
-            //   d = [...d, ...thisWindow]
-            // }
-            windows = d
-
-            console.log(windows)
-        },
-    })
+    receive(MAIN, { GET_WINDOWS: (d: any) => (windows = d) }, "GET_WINDOWS")
+    onDestroy(() => destroy(MAIN, "GET_WINDOWS"))
 
     // search
     $: if (windows || searchValue !== undefined) filterSearch()
     const filter = (s: string) => s.toLowerCase().replace(/[.,\/#!?$%\^&\*;:{}=\-_`~() ]/g, "")
     let fullFilteredWindows: any[] = []
     function filterSearch() {
-        fullFilteredWindows = JSON.parse(JSON.stringify(windows))
+        fullFilteredWindows = clone(windows)
         if (searchValue.length > 1) fullFilteredWindows = fullFilteredWindows.filter((a) => filter(a.name).includes(searchValue))
     }
 

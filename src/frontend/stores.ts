@@ -73,6 +73,7 @@ export const slideTimers: Writable<{ [key: string]: any }> = writable({})
 export const outputCache: Writable<any> = writable(null)
 export const previewBuffers: Writable<any> = writable({})
 export const ndiData: Writable<any> = writable({})
+export const closeAd: Writable<boolean> = writable(false)
 
 // EXPORT
 export const exportOptions: Writable<any> = writable({ pdf: { rows: 5, columns: 2, slide: true, text: true } })
@@ -155,6 +156,7 @@ export const overlays: Writable<Overlays> = writable({}) // {default}
 
 // AUDIO
 export const audioFolders: Writable<Categories> = writable({}) // {default}
+export const audioStreams: Writable<any> = writable({}) // {}
 export const volume: Writable<number> = writable(1) // 1
 export const gain: Writable<number> = writable(1) // 1
 
@@ -239,7 +241,7 @@ export const remotePassword: Writable<string> = writable("1234") // generate 4 n
 export const defaultProjectName: Writable<DefaultProjectNames> = writable("date") // "date"
 export const presenterControllerKeys: Writable<boolean> = writable(true) // true
 export const videoExtensions: Writable<string[]> = writable(["mp4", "mov", "wmv", "avi", "avchd", "flv", "mkv", "webm", "mpeg", "m4v"]) // [default]
-export const imageExtensions: Writable<string[]> = writable(["tif", "tiff", "bmp", "jpg", "jpeg", "gif", "png", "eps", "jfif", "webp"]) // [default]
+export const imageExtensions: Writable<string[]> = writable(["tif", "tiff", "bmp", "jpg", "jpeg", "gif", "png", "eps", "jfif", "webp", "avif"]) // [default]
 export const audioExtensions: Writable<string[]> = writable(["mp3", "wav", "m4a", "flac", "wma", "aac", "ogg", "weba", "aiff"])
 
 // CLOUD

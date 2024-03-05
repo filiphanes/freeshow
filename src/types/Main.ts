@@ -21,6 +21,7 @@ export interface Time {
 
 export type SelectIds =
     | "slide"
+    | "slide_icon"
     | "group"
     | "global_group"
     | "layout"
@@ -53,6 +54,7 @@ export type SelectIds =
     | "global_timer"
     | "variable"
     | "trigger"
+    | "audio_stream"
     | "chord"
     | "midi"
     | "theme"
@@ -88,6 +90,7 @@ export interface Media {
 export interface MediaStyle {
     filter?: string
     flipped?: boolean
+    flippedY?: boolean
     fit?: MediaFit
     speed?: string
     fromTime?: number
@@ -105,6 +108,7 @@ export type Popups =
     | "select_show"
     | "icon"
     | "manage_icons"
+    | "manage_colors"
     | "player"
     | "rename"
     | "color"
@@ -112,6 +116,7 @@ export type Popups =
     | "timer"
     | "variable"
     | "trigger"
+    | "audio_stream"
     | "transition"
     | "import_scripture"
     | "edit_event"

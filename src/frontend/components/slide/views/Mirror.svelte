@@ -1,5 +1,7 @@
 <script lang="ts">
-    import { currentWindow, stageShows } from "../../../stores"
+    import { OUTPUT } from "../../../../types/Channels"
+    import { currentWindow, outputs, showsCache, stageShows } from "../../../stores"
+    import { send } from "../../../utils/request"
     import { loadShows } from "../../helpers/setShow"
     import { _show } from "../../helpers/shows"
     import { getStyles } from "../../helpers/style"
@@ -19,18 +21,29 @@
     }
 
     $: stageEnabled = item.mirror?.enableStage
+    $: nextSlide = item.mirror?.nextSlide
 
     $: slideId = ref.slideId || ""
-    function getMirroredItem() {
-        if (item.mirror!.show === ref.showId) return
+    function getMirroredItem(index: number, _updater: any = null) {
+        if (!_updater && _updater !== null) return
+
+        let showId = item.mirror.show || ref.showId
+        if (!nextSlide && showId === ref.showId) return
 
         let slideIndex = item.mirror.useSlideIndex !== false ? index : item.mirror.index || 0
+        let layoutRef = _show(showId).layouts("active").ref()[0] || {}
 
-        let newSlideRef: any = _show(item.mirror!.show).layouts("active").ref()[0]?.[slideIndex]
+        if (nextSlide) {
+            slideIndex = index + 1
+            // skip disabled
+            while (layoutRef[slideIndex]?.data?.disabled) slideIndex++
+        }
+
+        let newSlideRef: any = layoutRef[slideIndex]
         if (!newSlideRef) return
         slideId = newSlideRef.id
 
-        let newItem: any = _show(item.mirror!.show).slides([slideId]).items([0]).get()[0]?.[0]
+        let newItem: any = _show(showId).slides([slideId]).items([0]).get()[0]?.[0]
         if (!newItem) return
         newItem.style = "width: 100%;height: 100%;"
         if (!edit) newItem.style += "pointer-events: none;"
@@ -41,9 +54,19 @@
     let itemStyle: any = {}
     $: itemStyle = getStyles(item.style) || {}
     $: currentRatio = itemStyle.width / itemStyle.height
+
+    // request preview capture
+    $: if ($currentWindow === "output" && stageEnabled && $stageShows[item.mirror?.stage]?.items?.["output#current_output"]?.enabled) {
+        let id = Object.keys($outputs)[0]
+        let previewId = $stageShows[item.mirror?.stage]?.settings?.output
+
+        setInterval(() => {
+            send(OUTPUT, ["REQUEST_PREVIEW"], { id, previewId })
+        }, 1000)
+    }
 </script>
 
-<Zoomed ratio={currentRatio} center style="height: 100%;" disableStyle showMirror>
+<Zoomed ratio={currentRatio} center style="height: 100%;" background="transparent" disableStyle showMirror>
     {#if stageEnabled}
         {#if item.mirror?.stage}
             {#key item.mirror?.stage}
@@ -54,13 +77,13 @@
                 {/each}
             {/key}
         {/if}
-    {:else if item.mirror?.show}
-        {#key item.mirror?.show}
-            {#await loadShows([item.mirror.show])}
+    {:else if item.mirror?.show || nextSlide}
+        {#key item.mirror?.show || ref.showId}
+            {#await loadShows([item.mirror?.show || ref.showId])}
                 {#if !$currentWindow}Loading...{/if}
             {:then}
-                {#if getMirroredItem()}
-                    <Textbox item={getMirroredItem()} ref={{ showId: item.mirror.show, slideId, id: ref.id }} />
+                {#if getMirroredItem(index, $showsCache[item.mirror?.show || ref.showId])}
+                    <Textbox item={getMirroredItem(index, $showsCache[item.mirror?.show || ref.showId])} ref={{ showId: item.mirror.show, slideId, id: ref.id }} />
                 {/if}
             {/await}
         {/key}

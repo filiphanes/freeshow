@@ -2,7 +2,7 @@
     import { onMount } from "svelte"
     import { uid } from "uid"
     import type { Item, Line } from "../../../types/Show"
-    import { activeEdit, activePopup, activeShow, dictionary, os, outputs, overlays, redoHistory, refreshListBoxes, selected, showsCache, templates } from "../../stores"
+    import { activeEdit, activePopup, activeShow, dictionary, os, outputs, overlays, redoHistory, refreshListBoxes, selected, showsCache, templates, variables } from "../../stores"
     import { menuClick } from "../context/menuClick"
     import Cam from "../drawer/live/Cam.svelte"
     import Image from "../drawer/media/Image.svelte"
@@ -152,6 +152,7 @@
 
         // create new slide
         let newSlide = { ..._show().slides([ref.id]).get()[0] }
+        if (!newSlide.items[editItemIndex]) return
         newSlide.items[editItemIndex].lines = secondLines
         delete newSlide.id
         delete newSlide.globalGroup
@@ -256,7 +257,10 @@
         setTimeout(() => {
             loaded = true
             autoSize = item?.autoFontSize || 0
-            if (!autoSize) getCustomAutoSize()
+            if (autoSize) return
+
+            if (isTextbox) getCustomAutoSize()
+            else autoSize = getAutoSize(item)
         }, 50)
     })
 
@@ -269,8 +273,10 @@
     $: {
         // style hash
         let s = ""
+        let lineBg = item.specialStyle?.lineBg ? `background-color: ${item.specialStyle.lineBg};` : ""
         item?.lines?.forEach((line) => {
-            s += line.align
+            let align = line.align.replaceAll(lineBg, "")
+            s += align + lineBg
             line.text?.forEach((a) => {
                 s += getTextStyle(a)
             })
@@ -281,9 +287,7 @@
         if (currentStyle !== s) getStyle()
     }
     function getTextStyle(lineText) {
-        let lineBg = item.specialStyle?.lineBg || ""
-
-        let style = (lineText.style || "") + lineBg
+        let style = lineText.style || ""
         return style
     }
 
@@ -298,10 +302,11 @@
 
         html = ""
         currentStyle = ""
+        let lineBg = item.specialStyle?.lineBg ? `background-color: ${item.specialStyle.lineBg};` : ""
         item?.lines?.forEach((line, i) => {
-            currentStyle += line.align
-            let lineBg = item.specialStyle?.lineBg ? `background-color: ${item.specialStyle.lineBg};` : ""
-            let style = line.align || lineBg ? 'style="' + lineBg + line.align + '"' : ""
+            let align = line.align.replaceAll(lineBg, "")
+            currentStyle += align + lineBg
+            let style = align || lineBg ? 'style="' + align + lineBg + '"' : ""
             html += `<div class="break" ${plain ? "" : style}>`
 
             // fix removing all text in a line
@@ -361,6 +366,8 @@
         }
 
         function setNewLines(a: any) {
+            if (!a[$activeEdit.id!].items[index]) return a
+
             a[$activeEdit.id!].items[index].lines = newLines
             return a
         }
@@ -435,7 +442,7 @@
     // UPDATE STYLE FROM LINES
 
     function getNewLines() {
-        if (!textElem) return []
+        if (!textElem || !item) return []
 
         let newLines: Line[] = []
         let pos: number = -1
@@ -678,7 +685,7 @@
     }
 
     let chordLines: string[] = []
-    $: if (chordsMode && item.lines) createChordLines()
+    $: if (chordsMode && item?.lines) createChordLines()
     function createChordLines() {
         chordLines = []
         chordButtons = []
@@ -686,7 +693,7 @@
         item.lines!.forEach((line, i) => {
             if (!line.text) return
 
-            let chords = JSON.parse(JSON.stringify(line.chords || []))
+            let chords = clone(line.chords || [])
 
             let html = ""
             let currentIndex = 0
@@ -729,6 +736,8 @@
             chordLines[i] = html
         })
     }
+
+    $: isDisabledVariable = item?.type === "variable" && $variables[item?.variable?.id]?.enabled === false
 </script>
 
 <!-- on:mouseup={() => chordUp({ showRef: ref, itemIndex: index, item })} -->
@@ -740,7 +749,12 @@ bind:offsetWidth={width} -->
     bind:this={itemElem}
     class={plain ? "editItem" : "editItem item context #edit_box"}
     class:selected={$activeEdit.items.includes(index)}
-    style={plain ? "width: 100%;" : `${item?.style}; outline: ${3 / ratio}px solid rgb(255 255 255 / 0.2);z-index: ${index + 1};${filter ? "filter: " + filter + ";" : ""}${backdropFilter ? "backdrop-filter: " + backdropFilter + ";" : ""}`}
+    class:isDisabledVariable
+    style={plain
+        ? "width: 100%;"
+        : `${item?.style}; outline: ${3 / ratio}px solid rgb(255 255 255 / 0.2);z-index: ${index + 1 + ($activeEdit.items.includes(index) ? 100 : 0)};${filter ? "filter: " + filter + ";" : ""}${
+              backdropFilter ? "backdrop-filter: " + backdropFilter + ";" : ""
+          }`}
     data-index={index}
     on:mousedown={mousedown}
 >
@@ -823,11 +837,11 @@ bind:offsetWidth={width} -->
         {#if item.src}
             {#if getMediaType(getExtension(item.src)) === "video"}
                 <!-- video -->
-                <video src={item.src} style="width: 100%;height: 100%;filter: {item.filter};{item.flipped ? 'transform: scaleX(-1);' : ''}" muted={true} autoplay loop>
+                <video src={item.src} style="width: 100%;height: 100%;object-fit: {item.fit || 'contain'};filter: {item.filter};transform: scale({item.flipped ? '-1' : '1'}, {item.flippedY ? '-1' : '1'});" muted={true} autoplay loop>
                     <track kind="captions" />
                 </video>
             {:else}
-                <Image src={item.src} alt="" style="width: 100%;height: 100%;object-fit: {item.fit || 'contain'};filter: {item.filter};{item.flipped ? 'transform: scaleX(-1);' : ''}" />
+                <Image src={item.src} alt="" style="width: 100%;height: 100%;object-fit: {item.fit || 'contain'};filter: {item.filter};transform: scale({item.flipped ? '-1' : '1'}, {item.flippedY ? '-1' : '1'});" />
                 <!-- <MediaLoader path={item.src} /> -->
             {/if}
         {/if}
@@ -842,7 +856,7 @@ bind:offsetWidth={width} -->
     {:else if item?.type === "events"}
         <DynamicEvents {...item.events} edit textSize={Number(getStyles(item.style, true)?.["font-size"]) || 80} />
     {:else if item?.type === "variable"}
-        <Variable {item} style={item?.style?.includes("font-size") && item.style.split("font-size:")[1].trim()[0] !== "0" ? "" : `font-size: ${autoSize}px;`} edit />
+        <Variable {item} style={item?.style?.includes("font-size") && item.style.split("font-size:")[1].trim()[0] !== "0" ? "" : `font-size: ${autoSize}px;`} hideText={false} edit />
     {:else if item?.type === "web"}
         <Website src={item?.web?.src || ""} />
     {:else if item?.type === "mirror"}
@@ -851,7 +865,7 @@ bind:offsetWidth={width} -->
         <Visualizer {item} />
     {:else if item?.type === "icon"}
         {#if item.customSvg}
-            <div class="customIcon">
+            <div class="customIcon" class:customColor={item?.style.includes("color:") && !item?.style.includes("color:#FFFFFF;")}>
                 {@html item.customSvg}
             </div>
         {:else}
@@ -870,6 +884,11 @@ bind:offsetWidth={width} -->
         outline: 5px solid var(--secondary-opacity);
         overflow: visible;
     }
+
+    .item.isDisabledVariable {
+        opacity: 0.5;
+    }
+
     .align span.placeholder {
         opacity: 0.5;
         pointer-events: none;
@@ -1063,5 +1082,8 @@ bind:offsetWidth={width} -->
     .customIcon :global(svg) {
         width: 100%;
         height: 100%;
+    }
+    .customIcon.customColor :global(svg path) {
+        fill: currentColor;
     }
 </style>

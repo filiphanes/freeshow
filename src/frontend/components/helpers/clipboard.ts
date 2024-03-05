@@ -12,6 +12,7 @@ import {
     activeShow,
     activeStage,
     audioFolders,
+    audioStreams,
     categories,
     clipboard,
     currentOutputSettings,
@@ -45,7 +46,7 @@ import { newToast } from "../../utils/messages"
 import { removeSlide } from "../context/menuClick"
 import { deleteTimer } from "../drawer/timers/timers"
 import { setCaret } from "../edit/scripts/textStyle"
-import { clone } from "./array"
+import { clone, removeDuplicates } from "./array"
 import { pasteText } from "./caretHelper"
 import { history } from "./history"
 import { loadShows } from "./setShow"
@@ -375,7 +376,7 @@ const copyActions: any = {
         if (fullGroup) {
             // select all children of group
             ids = ref.filter((a) => ids.includes(a.parent?.id || a.id)).map((a) => a.id)
-            ids = [...new Set(ids)]
+            ids = removeDuplicates(ids)
         }
 
         let slides = clone(_show().slides(ids).get())
@@ -621,6 +622,15 @@ const deleteActions = {
     },
     trigger: (data: any) => {
         triggers.update((a) => {
+            data.forEach(({ id }) => {
+                delete a[id]
+            })
+
+            return a
+        })
+    },
+    audio_stream: (data: any) => {
+        audioStreams.update((a) => {
             data.forEach(({ id }) => {
                 delete a[id]
             })

@@ -3,6 +3,7 @@ on:
     push:
         branches:
             - "main"
+    workflow_dispatch:
 
 jobs:
     publish:
@@ -26,27 +27,13 @@ jobs:
               # npm ci is better, but requires package-lock.json file
               run: npm install
 
-            # - name: Install dmg-license
-            #   if: startsWith(matrix.os, 'macos')
-            #   run: npm i dmg-license
-
-            - name: Build app
+            - name: Build and release app
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   CSC_LINK: ${{ secrets.CSC_LINK }}
                   CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-                  GA_SECRET: ${{ secrets.GA_SECRET }}
               run: npm run release
 
-            # https://abskmj.github.io/notes/posts/github/actions/setup-snapcraft/
-            # - name: Install Snapcraft
-            #   uses: samuelmeuli/action-snapcraft@v1
-            #   if: startsWith(matrix.os, 'ubuntu')
-            #   with:
-            #       snapcraft_token: ${{ secrets.SNAPCRAFT_TOKEN }}
-
-    # Mac building fails for some reason when in the same matrix as the other builds or without the other builds,
-    # So that's why it is here:
     publish_mac:
         name: "Publish MacOS"
         runs-on: macos-latest
@@ -60,15 +47,29 @@ jobs:
               with:
                   node-version: 18
 
+            # Change Python version: https://github.com/nodejs/node-gyp/issues/2869
+            - name: Install Python 3.11
+              uses: actions/setup-python@v4
+              with:
+                  python-version: "3.11"
+
+            # This probably does not make any difference.
+            - name: Install node-gyp
+              run: npm install -g node-gyp
+
+            # Mac building (grandiose - node-gyp) fails just sometimes (has to be re-run).
             - name: Install dependencies
               run: npm install
 
             - name: Install dmg-license
               run: npm i dmg-license
 
-            - name: Build app
+            - name: Build and release app
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   CSC_LINK: ${{ secrets.CSC_LINK }}
                   CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+                  APPLE_ID: ${{ secrets.APPLEID }}
+                  APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLEIDPASS }}
+                  APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
               run: npm run release

@@ -12,9 +12,10 @@ export const languages: any = {
     pl: "Polski", // Polish
     hu: "Magyar", // Hungarian
     sr: "Srpski", // Serbian
-    si: "Slovenščina", // Slovenian
+    sl: "Slovenščina", // Slovenian
     ua: "Українська", // Ukrainian
     tr: "Türkçe", // Turkish
+    fr_FR: "Français", // French
 }
 
 // Help: https://developers.google.com/search/docs/advanced/crawling/localized-versions#language-codes
@@ -34,7 +35,8 @@ export const replace: any = {
     pl: ["pl"],
     hu: ["hu"],
     sr: ["sr"],
-    si: ["si", "sl"],
+    sl: ["si", "sl"],
     ua: ["ua", "uk"],
     tr: ["tr"],
+    fr_FR: ["fr", "fr-FR"],
 }

@@ -79,6 +79,8 @@ export function _show(id: any = "active") {
                 if (!shows[id]) return []
                 if (!slideIds.length && shows[id].slides) slideIds = Object.keys(shows[id].slides)
                 slideIds.forEach((slideId) => {
+                    if (!shows[id].slides[slideId]) return
+
                     if (key) a.push(shows[id].slides[slideId][key])
                     else {
                         a.push(shows[id].slides[slideId])
@@ -93,6 +95,8 @@ export function _show(id: any = "active") {
                 showsCache.update((a: any) => {
                     if (!slideIds.length) slideIds = Object.keys(a[id].layouts)
                     slideIds.forEach((slideId) => {
+                        if (!a[id].slides[slideId]) return
+
                         prev.push(a[id].slides[slideId][key])
                         if (value === undefined) delete a[id].slides[slideId][key]
                         else a[id].slides[slideId][key] = value
@@ -144,6 +148,8 @@ export function _show(id: any = "active") {
                     if (!slideIds.length) slideIds = Object.keys(shows[id].slides || {})
                     slideIds.forEach((slideId, i) => {
                         a.push([])
+                        if (!shows[id].slides[slideId]) return
+
                         // if (!indexes.length) a[i].push(...shows[id].slides[slideId].items)
                         if (!indexes.length) indexes = [...Object.keys(shows[id].slides[slideId].items)] as any
                         indexes.forEach((index) => {
@@ -168,6 +174,7 @@ export function _show(id: any = "active") {
                             if (!a[id].slides[slideId]) return
                             if (!indexes.length) indexes = [...Object.keys(shows[id].slides[slideId].items)] as any
                             indexes.forEach((index, i) => {
+                                let value = values[i] || values[0]
                                 if (key) {
                                     if (!a[id].slides[slideId].items[index]) return
 
@@ -175,14 +182,15 @@ export function _show(id: any = "active") {
                                         let splitted = key.split(".")
                                         prev.values.push(a[id].slides[slideId].items[index][splitted[0]]?.[splitted[1]] ? clone(a[id].slides[slideId].items[index][splitted[0]][splitted[1]]) : null)
                                         if (!a[id].slides[slideId].items[index][splitted[0]]) a[id].slides[slideId].items[index][splitted[0]] = {}
-                                        a[id].slides[slideId].items[index][splitted[0]][splitted[1]] = values[i] || values[0]
+                                        a[id].slides[slideId].items[index][splitted[0]][splitted[1]] = value
                                     } else {
                                         prev.values.push(a[id].slides[slideId].items[index][key] ? clone(a[id].slides[slideId].items[index][key]) : null)
-                                        a[id].slides[slideId].items[index][key] = values[i] || values[0]
+                                        if (value === undefined) delete a[id].slides[slideId].items[index][key]
+                                        else a[id].slides[slideId].items[index][key] = value
                                     }
                                 } else {
                                     prev.values.push(a[id].slides[slideId].items[index] ? clone(a[id].slides[slideId].items[index]) : null)
-                                    a[id].slides[slideId].items[index] = values[i] || values[0]
+                                    a[id].slides[slideId].items[index] = value
                                 }
                             })
                         })
@@ -197,7 +205,8 @@ export function _show(id: any = "active") {
                     showsCache.update((a: any) => {
                         slideIds.forEach((slideId) => {
                             items.forEach((item: any) => {
-                                if (a[id]) a[id].slides[slideId].items.push(item)
+                                if (!a[id]?.slides?.[slideId]) return
+                                a[id].slides[slideId].items.push(item)
                             })
                         })
 
@@ -213,6 +222,8 @@ export function _show(id: any = "active") {
                         if (!slideIds.length) slideIds = Object.keys(a[id].slides)
                         slideIds.forEach((slideId) => {
                             indexes.forEach((index) => {
+                                if (!a[id].slides[slideId]) return
+
                                 prev.push(a[id].slides[slideId].items[index])
                                 a[id].slides[slideId].items.splice(index, 1)
                             })
@@ -231,6 +242,7 @@ export function _show(id: any = "active") {
                         if (!slideIds.length && shows[id]?.slides) slideIds = Object.keys(shows[id].slides || {})
                         slideIds.forEach((slideId, i) => {
                             a.push([])
+                            if (!shows[id].slides[slideId]) return
                             if (!indexes.length) indexes = Object.keys(shows[id].slides[slideId].items) as any
                             indexes.forEach((index) => {
                                 if (!lines.length) lines = Object.keys(shows[id].slides[slideId].items[index]?.lines || {})
@@ -285,7 +297,7 @@ export function _show(id: any = "active") {
                             slideIds.forEach((slideId) => {
                                 indexes.forEach((index) => {
                                     items.forEach((item: any, i: number) => {
-                                        // WIP
+                                        if (!a[id].slides[slideId]) return
                                         a[id].slides[slideId].items[index].lines[lineIndexes[i]] = item
                                     })
                                 })
@@ -302,6 +314,7 @@ export function _show(id: any = "active") {
                             if (!slideIds.length) slideIds = Object.keys(a[id].slides)
                             slideIds.forEach((slideId) => {
                                 indexes.forEach((index) => {
+                                    if (!shows[id].slides[slideId]) return
                                     if (!lines.length) lines = Object.keys(shows[id].slides[slideId].items[index].lines)
                                     lines.forEach((line) => {
                                         prev.lineIndexes.push(line)
@@ -345,7 +358,7 @@ export function _show(id: any = "active") {
                     layoutIds.forEach((layoutId: any, i: number) => {
                         a.push([])
                         let layoutIndex: number = -1
-                        shows[id].layouts[layoutId].slides.forEach((layoutSlide: any, index: number) => {
+                        shows[id].layouts[layoutId]?.slides?.forEach((layoutSlide: any, index: number) => {
                             if (!shows[id].slides[layoutSlide.id]) {
                                 console.log("MISSING SLIDE")
                                 return

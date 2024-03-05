@@ -75,27 +75,6 @@ export let stores: { [key: string]: Store<any> } = {
 
 // ----- CUSTOM DATA PATH -----
 
-export let userDataPath: string | null = null
-export function updateDataPath({ reset, dataPath }: any = {}) {
-    if (reset) {
-        userDataPath = app.getPath("userData")
-        updateStoresPath()
-
-        return
-    }
-
-    let settingsStore = settings.store || {}
-
-    let useDataPath = !!settingsStore.special?.customUserDataLocation
-    if (!useDataPath) return
-
-    userDataPath = dataPath || settingsStore.dataPath || ""
-    if (!userDataPath) return
-
-    userDataPath = path.join(userDataPath, dataFolderNames.userData)
-    updateStoresPath()
-}
-
 const portableData: any = {
     synced_settings: { key: "SYNCED_SETTINGS", defaults: defaultSyncedSettings },
     themes: { key: "THEMES", defaults: {} },
@@ -109,23 +88,42 @@ const portableData: any = {
     history: { key: "HISTORY", defaults: {} },
 }
 
-function updateStoresPath() {
-    if (userDataPath === null) return
+export let userDataPath: string | null = null
+export function updateDataPath({ reset, dataPath, load }: any = {}) {
+    if (reset) return resetStoresPath()
 
-    let data: any = {}
-    Object.keys(portableData).forEach((id) => {
-        let key = portableData[id].key
+    let settingsStore = settings.store || {}
 
-        // store data temporarily
-        data[id] = JSON.parse(JSON.stringify(stores[key].store))
+    let useDataPath = !!settingsStore.special?.customUserDataLocation
+    if (!useDataPath) return
 
-        // set new stores to export
-        stores[key] = new Store({ name: fileNames[id], defaults: portableData[id].defaults || {}, cwd: userDataPath! })
+    userDataPath = dataPath || settingsStore.dataPath || ""
+    if (!userDataPath) return
 
-        if (!Object.keys(data[id]).length) return
+    userDataPath = path.join(userDataPath, dataFolderNames.userData)
+    updateStoresPath(load)
+}
 
-        // rewrite data to new location
-        stores[key].clear()
-        stores[key].set(data[id])
-    })
+function resetStoresPath() {
+    userDataPath = app.getPath("userData")
+    updateStoresPath()
+}
+
+function updateStoresPath(load: boolean = false) {
+    if (!userDataPath) return
+    Object.keys(portableData).forEach((id) => createStoreAtNewLocation(id, load))
+}
+
+function createStoreAtNewLocation(id: string, load: boolean = false) {
+    let key = portableData[id].key
+    let tempData = load ? {} : JSON.parse(JSON.stringify(stores[key].store))
+
+    // set new stores to export
+    stores[key] = new Store({ name: fileNames[id], defaults: portableData[id].defaults || {}, cwd: userDataPath! })
+
+    if (load || !Object.keys(tempData).length) return
+
+    // rewrite data to new location
+    stores[key].clear()
+    stores[key].set(tempData)
 }

@@ -41,9 +41,13 @@
     import SetTime from "./popups/SetTime.svelte"
     import Variable from "./popups/Variable.svelte"
     import Trigger from "./popups/Trigger.svelte"
+    import ManageColors from "./popups/ManageColors.svelte"
+    import AudioStream from "./popups/AudioStream.svelte"
+
+    const disableClose = ["initialize", "cloud_method"]
 
     function mousedown(e: any) {
-        if (popupCache === "initialize") return
+        if (disableClose.includes(popupId)) return
 
         if (e.target.classList.contains("popup")) activePopup.set(null)
     }
@@ -57,6 +61,7 @@
         select_show: SelectShow,
         icon: ChangeIcon,
         manage_icons: ManageIcons,
+        manage_colors: ManageColors,
         choose_camera: ChooseCamera,
         player: CreatePlayer,
         rename: Rename,
@@ -66,6 +71,7 @@
         timer: Timer,
         variable: Variable,
         trigger: Trigger,
+        audio_stream: AudioStream,
         transition: Transition,
         import_scripture: ImportScripture,
         edit_event: EditEvent,
@@ -89,38 +95,38 @@
     }
 
     // prevent svelte transition lock
-    let popupCache: any = null
+    let popupId: any = null
     let popupTimeout: any = null
     $: if ($activePopup !== undefined) updatePopup()
     function updatePopup() {
         if (popupTimeout) return
 
         popupTimeout = setTimeout(() => {
-            popupCache = $activePopup
+            popupId = $activePopup
             popupTimeout = null
         }, 100)
     }
 </script>
 
-{#if popupCache !== null}
-    {#key popupCache}
+{#if popupId !== null}
+    {#key popupId}
         <div style={$os.platform === "win32" ? "height: calc(100% - 30px);" : null} class="popup" transition:fade={{ duration: 100 }} on:mousedown={mousedown}>
-            <div class="card" class:fill={popupCache === "import_scripture"} transition:scale={{ duration: 200 }}>
+            <div class="card" class:fill={popupId === "import_scripture"} transition:scale={{ duration: 200 }}>
                 <div style="position: relative;">
-                    {#if popupCache !== "alert"}
-                        {#key popupCache}
-                            <h2 style="text-align: center;padding: 10px 50px;"><T id="popup.{popupCache}" /></h2>
+                    {#if popupId !== "alert"}
+                        {#key popupId}
+                            <h2 style="text-align: center;padding: 10px 50px;"><T id="popup.{popupId}" /></h2>
                         {/key}
                     {/if}
 
-                    {#if popupCache !== "alert" && popupCache !== "initialize"}
+                    {#if popupId !== "alert" && !disableClose.includes(popupId)}
                         <Button style="position: absolute;right: 0;top: 0;height: 100%;min-height: 40px;" on:click={() => activePopup.set(null)}>
                             <Icon id="close" size={2} />
                         </Button>
                     {/if}
                 </div>
                 <div style="display: flex;flex-direction: column;margin: 20px;min-width: 38vw;">
-                    <svelte:component this={popups[popupCache]} />
+                    <svelte:component this={popups[popupId]} />
                 </div>
             </div>
         </div>
@@ -139,7 +145,7 @@
         width: 100%;
         height: 100%;
         padding: 20px 300px;
-        z-index: 80;
+        z-index: 5000;
 
         font-size: 1.2em;
 

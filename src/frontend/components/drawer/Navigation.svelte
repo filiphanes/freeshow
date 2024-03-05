@@ -64,6 +64,7 @@
                 { id: "favourites", name: "category.favourites", default: true, icon: "star" },
                 { id: "SEPERATOR", name: "" },
                 { id: "microphones", name: "live.microphones", default: true, icon: "microphone" },
+                { id: "audio_streams", name: "live.audio_streams", default: true, icon: "audio_stream" },
                 { id: "SEPERATOR", name: "" },
                 ...(sortObject(keysToID($audioFolders), "name") as Button[]),
             ]
@@ -101,7 +102,7 @@
     const getBibleVersions = () =>
         keysToID($scriptures)
             .map((a: any) => ({ ...a, icon: a.api ? "scripture_alt" : a.collection ? "collection" : "scripture" }))
-            .sort((a: any, b: any) => b.name.localeCompare(a.name))
+            .sort((a: any, b: any) => (b.customName || b.name).localeCompare(a.customName || a.name))
             .sort((a: any, b: any) => (a.api === true && b.api !== true ? 1 : -1))
             .sort((a: any, b: any) => (a.collection !== undefined && b.collection === undefined ? -1 : 1))
 

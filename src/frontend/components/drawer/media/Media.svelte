@@ -18,6 +18,10 @@
     import Folder from "./Folder.svelte"
     import Media from "./MediaCard.svelte"
     import { loadFromPixabay } from "./pixabay"
+    import { clone } from "../../helpers/array"
+    import { uid } from "uid"
+    import { onDestroy } from "svelte"
+    import NDIStreams from "../live/NDIStreams.svelte"
 
     export let active: string | null
     export let searchValue: string = ""
@@ -87,8 +91,12 @@
 
     let filesInFolders: string[] = []
 
+    let listenerId = uid()
+    onDestroy(() => window.api.removeListener(READ_FOLDER, listenerId))
+
     // receive files
-    window.api.receive(READ_FOLDER, (msg: any) => {
+    window.api.receive(READ_FOLDER, receiveContent)
+    function receiveContent(msg: any) {
         filesInFolders = (msg.filesInFolders || []).sort((a: any, b: any) => a.name.localeCompare(b.name))
 
         if (active !== "all" && msg.path !== path) return
@@ -97,7 +105,7 @@
         files.sort((a: any, b: any) => a.name.localeCompare(b.name)).sort((a: any, b: any) => (a.folder === b.folder ? 0 : a.folder ? -1 : 1))
 
         filterFiles()
-    })
+    }
 
     let scrollElem: any
 
@@ -143,8 +151,8 @@
     const filter = (s: string) => s.toLowerCase().replace(/[.,\/#!?$%\^&\*;:{}=\-_`~() ]/g, "")
     let fullFilteredFiles: any[] = []
     function filterSearch() {
-        fullFilteredFiles = JSON.parse(JSON.stringify(filteredFiles))
-        if (searchValue.length > 1) fullFilteredFiles = [...fullFilteredFiles, ...filesInFolders].filter((a) => filter(a.name).includes(searchValue))
+        fullFilteredFiles = clone(filteredFiles)
+        if (searchValue.length > 1) fullFilteredFiles = [...fullFilteredFiles, ...filesInFolders].filter((a) => filter(a.name).includes(filter(searchValue)))
     }
 
     let nextScrollTimeout: any = null
@@ -229,11 +237,13 @@
     // select all
     $: if ($selectAllMedia) selectAll()
     function selectAll() {
-        let data = fullFilteredFiles.map((file) => {
-            let type = getMediaType(file.extension)
-            let name = file.name.slice(0, file.name.lastIndexOf("."))
-            return { name, path: file.path, type }
-        })
+        let data = fullFilteredFiles
+            .filter((a) => a.extension)
+            .map((file) => {
+                let type = getMediaType(file.extension)
+                let name = file.name.slice(0, file.name.lastIndexOf("."))
+                return { name, path: file.path, type }
+            })
 
         selected.set({ id: "media", data })
         selectAllMedia.set(false)
@@ -253,6 +263,8 @@
         {:else if active === "screens"}
             {#if screenTab === "screens"}
                 <Screens bind:streams />
+            {:else if screenTab === "ndi"}
+                <NDIStreams />
             {:else}
                 <Windows bind:streams {searchValue} />
             {/if}
@@ -290,7 +302,7 @@
                             {#if file.folder}
                                 <Folder bind:rootPath={path} name={file.name} path={file.path} mode={$mediaOptions.mode} />
                             {:else}
-                                <Media name={file.name} path={file.path} type={getMediaType(file.extension)} bind:activeFile {allFiles} {active} />
+                                <Media thumbnail={$mediaOptions.mode !== "list"} name={file.name} path={file.path} type={getMediaType(file.extension)} bind:activeFile {allFiles} {active} />
                             {/if}
                         </VirtualList>
                     {/if}
@@ -309,12 +321,17 @@
         {#if active === "screens"}
             <Button style="flex: 1;" active={screenTab === "screens"} on:click={() => (screenTab = "screens")} center>
                 <Icon size={1.2} id="screen" right />
-                <p>Screens</p>
+                <p><T id="live.screens" /></p>
             </Button>
             <Button style="flex: 1;" active={screenTab === "windows"} on:click={() => (screenTab = "windows")} center>
                 <Icon size={1.2} id="window" right />
-                <p>Windows</p>
+                <p><T id="live.windows" /></p>
             </Button>
+            <!-- WIP ndi inputs: -->
+            <!-- <Button style="flex: 1;" active={screenTab === "ndi"} on:click={() => (screenTab = "ndi")} center>
+                <Icon size={1.2} id="ndi" right />
+                <p>NDI</p>
+            </Button> -->
         {:else if active === "online"}
             <Button style="flex: 1;" active={onlineTab === "youtube"} on:click={() => (onlineTab = "youtube")} center>
                 <Icon style="fill: {onlineTab !== 'youtube' ? 'white' : '#ff0000'};" size={1.2} id="youtube" right />
@@ -396,7 +413,7 @@
                     <Icon size={1.3} id={$mediaOptions.mode} white />
                 </Button>
 
-                <Button on:click={() => (zoomOpened = !zoomOpened)} title={$dictionary.actions?.zoom}>
+                <Button on:click={() => (zoomOpened = !zoomOpened)} disabled={$mediaOptions.mode === "list"} title={$dictionary.actions?.zoom}>
                     <Icon size={1.3} id="zoomIn" white />
                 </Button>
                 {#if zoomOpened}

@@ -1,17 +1,22 @@
 import { get } from "svelte/store"
-import { activeEdit, activePage, activeShow, autosave, currentWindow, disabledServers, focusedArea, os, outputDisplay, outputs, serverData, special, undoHistory } from "../stores"
-import { send } from "./request"
 import { MAIN, OUTPUT } from "../../types/Channels"
 import { getActiveOutputs } from "../components/helpers/output"
-import { newToast } from "./messages"
-import { save } from "./save"
+import { activeEdit, activePage, activeShow, allOutputs, autosave, currentWindow, disabledServers, focusedArea, os, outputDisplay, outputs, serverData, special, version } from "../stores"
 import { convertAutosave } from "../values/autosave"
+import { newToast } from "./messages"
+import { send } from "./request"
+import { save } from "./save"
 
 // hide output window
 export function hideDisplay(ctrlKey: boolean = true) {
     if (!ctrlKey) return
     outputDisplay.set(false)
-    window.api.send(OUTPUT, { channel: "DISPLAY", data: { enabled: false } })
+
+    let outputsList: any[] = getActiveOutputs(get(allOutputs), false)
+    outputsList.forEach((id) => {
+        let output: any = { id, ...get(allOutputs)[id] }
+        send(OUTPUT, ["DISPLAY"], { enabled: false, output })
+    })
 }
 
 // select all focus
@@ -40,6 +45,12 @@ export function startAutosave() {
 const ERROR_FILTER = [
     "Failed to execute 'drawImage' on 'CanvasRenderingContext2D'", // canvas media cache
     "Failed to load because no supported source was found.", // media file doesn't exists
+    "The element has no supported sources.", // audio error
+    "The play() request was interrupted by a call to pause().", // video transitions
+    "The play() request was interrupted because the media was removed from the document.", // video transitions
+    "Failed to fetch", // probably offline
+    "Uncaught IndexSizeError: Failed to execute 'setStart' on 'Range'", // caret update/reset (pos larger than content)
+    "Uncaught IndexSizeError: Failed to execute 'setEnd' on 'Range'", // caret update/reset (pos larger than content)
 ]
 export function logerror(err) {
     let msg = err.type === "unhandledrejection" ? err.reason?.message : err.message
@@ -48,10 +59,11 @@ export function logerror(err) {
     let log = {
         time: new Date(),
         os: get(os).platform || "Unknown",
+        version: get(version),
         active: { window: get(currentWindow) || "main", page: get(activePage), show: get(activeShow), edit: get(activeEdit) },
-        lastUndo: get(undoHistory)[get(undoHistory).length - 1],
-        source: err.type === "unhandledrejection" ? "See stack" : `${err.filename} - ${err.lineno}:${err.colno}`,
+        // lastUndo: get(undoHistory)[get(undoHistory).length - 1],
         type: err.type,
+        source: err.type === "unhandledrejection" ? "See stack" : `${err.filename} - ${err.lineno}:${err.colno}`,
         message: msg,
         stack: err.reason?.stack || err.error?.stack,
     }

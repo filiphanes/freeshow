@@ -5,6 +5,7 @@ import { clone } from "../components/helpers/array"
 import { analyseAudio } from "../components/helpers/audio"
 import { history } from "../components/helpers/history"
 import { getFileName } from "../components/helpers/media"
+import { getActiveOutputs } from "../components/helpers/output"
 import { checkName } from "../components/helpers/show"
 import { checkNextAfterMedia } from "../components/helpers/showActions"
 import { defaultThemes } from "../components/settings/tabs/defaultThemes"
@@ -31,6 +32,8 @@ import {
     allOutputs,
     audioChannels,
     audioFolders,
+    closeAd,
+    currentOutputSettings,
     currentWindow,
     dataPath,
     deviceId,
@@ -67,6 +70,7 @@ import {
     textCache,
     theme,
     themes,
+    timeFormat,
     timers,
     transitionData,
     variables,
@@ -76,6 +80,7 @@ import {
 } from "../stores"
 import { IMPORT } from "./../../types/Channels"
 import { redoHistory, undoHistory } from "./../stores"
+import { startTracking } from "./analytics"
 import { checkForUpdates } from "./checkForUpdates"
 import { createData } from "./createData"
 import { setLanguage } from "./language"
@@ -85,7 +90,6 @@ import { playMidiIn } from "./midi"
 import { receive, send } from "./request"
 import { saveComplete } from "./save"
 import { restartOutputs, updateSettings, updateSyncedSettings, updateThemeValues } from "./updateSettings"
-import { startTracking } from "./analytics"
 
 export function startup() {
     window.api.receive(STARTUP, (msg) => {
@@ -156,6 +160,8 @@ const receiveMAIN: any = {
         alertMessage.set(a)
 
         if (a === "error.display") {
+            let outputIds = getActiveOutputs(get(outputs), false, true)
+            currentOutputSettings.set(outputIds[0])
             popupData.set({ activateOutput: true })
             activePopup.set("choose_screen")
             return
@@ -259,7 +265,6 @@ const receiveNDI: any = {
 
 const receiveFOLDER: any = {
     MEDIA: (a: any, id: "media" | "audio" = "media") => {
-        // TODO: clean
         // check if folder already exists
         let path: string = a.path
         let exists = Object.values(id === "media" ? get(mediaFolders) : get(audioFolders)).find((a) => a.path === path)
@@ -267,6 +272,7 @@ const receiveFOLDER: any = {
             newToast("$error.folder_exists")
             return
         }
+
         history({
             id: "UPDATE",
             newData: { data: { name: getFileName(path), icon: "folder", path: path } },
@@ -321,13 +327,12 @@ const receiveOUTPUTasMAIN: any = {
     REQUEST_DATA_MAIN: () => sendInitialOutputData(),
     MAIN_LOG: (msg: any) => console.log(msg),
     MAIN_VIDEO_ENDED: async (msg) => {
-        console.log("ENDED", msg)
         let videoPath = get(outputs)[msg.id].out?.background?.path
+        // WIP! "DUPLICATE" of Media.svelte receiver NOT SURE IF THIS DOES ANYTHING
         if (!videoPath) return
 
         // check and execute next after media regardless of loop
-        setTimeout(() => checkNextAfterMedia(videoPath!), 100)
-        // if (checkNextAfterMedia(videoPath)) return
+        setTimeout(() => checkNextAfterMedia(videoPath!), 10)
     },
 }
 
@@ -356,6 +361,18 @@ const receiveOUTPUTasOUTPUT: any = {
         // used for stage mirror data (hacky fix)
         allOutputs.set(a)
     },
+    // only received by stage screen outputs
+    PREVIEW: ({ id, buffer, size, originalSize }) => {
+        // WIP only receive the "output capture" from this outputs "stageOutput id"
+        // let outputId = Object.keys(get(outputs))[0]
+        // if (id !== outputId) return
+
+        previewBuffers.update((a) => {
+            a[id] = { buffer, size, originalSize }
+            return a
+        })
+    },
+    CLOSE_AD: () => closeAd.set(true),
     STYLES: (a: any) => styles.set(a),
     // BACKGROUND: (a: any) => outBackground.set(a),
     TRANSITION: (a: any) => transitionData.set(a),
@@ -371,13 +388,15 @@ const receiveOUTPUTasOUTPUT: any = {
     OVERLAYS: (a: any) => clone(overlays.set(a)),
     EVENTS: (a: any) => events.set(a),
 
-    DRAW: (a: any) => draw.set(a),
-    DRAW_TOOL: (a: any) => drawTool.set(a),
+    DRAW: (a: any) => draw.set(a.data),
+    DRAW_TOOL: (a: any) => drawTool.set(a.data),
     DRAW_SETTINGS: (a: any) => drawSettings.set(a),
     VIZUALISER_DATA: (a: any) => visualizerData.set(a),
     MEDIA: (a: any) => media.set(a),
+    MEDIA_CACHE: (a: any) => mediaCache.set(a),
     TIMERS: (a: any) => clone(timers.set(a)),
     VARIABLES: (a: any) => clone(variables.set(a)),
+    TIME_FORMAT: (a: any) => timeFormat.set(a),
     SPECIAL: (a: any) => clone(special.set(a)),
     ACTIVE_TIMERS: (a: any) => activeTimers.set(a),
     // POSITION: (a: any) => outputPosition.set(a),
@@ -394,14 +413,16 @@ export function sendInitialOutputData() {
     send(OUTPUT, ["OVERLAYS"], get(overlays))
     send(OUTPUT, ["EVENTS"], get(events))
 
-    send(OUTPUT, ["DRAW"], get(draw))
-    send(OUTPUT, ["DRAW_TOOL"], get(drawTool))
+    send(OUTPUT, ["DRAW"], { data: get(draw) })
+    send(OUTPUT, ["DRAW_TOOL"], { data: get(drawTool) })
     send(OUTPUT, ["DRAW_SETTINGS"], get(drawSettings))
 
     send(OUTPUT, ["VIZUALISER_DATA"], get(visualizerData))
     send(OUTPUT, ["MEDIA"], get(media))
+    send(OUTPUT, ["MEDIA_CACHE"], get(mediaCache))
     send(OUTPUT, ["TIMERS"], get(timers))
     send(OUTPUT, ["VARIABLES"], get(variables))
+    send(OUTPUT, ["TIME_FORMAT"], get(timeFormat))
 
     send(OUTPUT, ["SPECIAL"], get(special))
 

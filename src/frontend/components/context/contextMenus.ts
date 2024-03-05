@@ -10,20 +10,17 @@ export interface ContextMenuItem {
     disabled?: boolean
 }
 
-// WIP get Cmd when on MacOS
-const ctrl = "Ctrl" // get(os).platform === "darwin" ? "Cmd" :
-
 export const contextMenuItems: { [key: string]: ContextMenuItem } = {
     // MENU
-    save: { label: "actions.save", icon: "save", shortcuts: [ctrl + "+S"] },
-    import: { label: "actions.import", icon: "import", shortcuts: [ctrl + "+I"] },
-    export_more: { label: "actions.export", icon: "export", shortcuts: [ctrl + "+E"] },
-    undo: { label: "actions.undo", icon: "undo", shortcuts: [ctrl + "+Z"] },
-    redo: { label: "actions.redo", icon: "redo", shortcuts: [ctrl + "+Y"] },
-    history: { label: "popup.history", icon: "history", shortcuts: [ctrl + "+H"] },
-    cut: { label: "actions.cut", icon: "cut", shortcuts: [ctrl + "+X"] },
-    copy: { label: "actions.copy", icon: "copy", shortcuts: [ctrl + "+C"] },
-    paste: { label: "actions.paste", icon: "paste", shortcuts: [ctrl + "+V"] },
+    save: { label: "actions.save", icon: "save", shortcuts: ["Ctrl+S"] },
+    import: { label: "actions.import", icon: "import", shortcuts: ["Ctrl+I"] },
+    export_more: { label: "actions.export", icon: "export", shortcuts: ["Ctrl+E"] },
+    undo: { label: "actions.undo", icon: "undo", shortcuts: ["Ctrl+Z"] },
+    redo: { label: "actions.redo", icon: "redo", shortcuts: ["Ctrl+Y"] },
+    history: { label: "popup.history", icon: "history", shortcuts: ["Ctrl+H"] },
+    cut: { label: "actions.cut", icon: "cut", shortcuts: ["Ctrl+X"] },
+    copy: { label: "actions.copy", icon: "copy", shortcuts: ["Ctrl+C"] },
+    paste: { label: "actions.paste", icon: "paste", shortcuts: ["Ctrl+V"] },
     docs: { label: "main.docs", icon: "document" },
     fullscreen: { label: "actions.fullscreen", icon: "fullscreen", shortcuts: ["F11"] },
     resetZoom: { label: "actions.resetZoom", icon: "reset" },
@@ -33,7 +30,7 @@ export const contextMenuItems: { [key: string]: ContextMenuItem } = {
     quit: { label: "main.quit", icon: "close" },
     settings: { label: "menu.settings", icon: "settings" },
     about: { label: "main.about", icon: "info" },
-    shortcuts: { label: "popup.shortcuts", icon: "shortcut", shortcuts: [ctrl + "+?"] },
+    shortcuts: { label: "popup.shortcuts", icon: "shortcut", shortcuts: ["Ctrl+?"] },
     rename: { label: "actions.rename", icon: "rename", shortcuts: ["F2"] },
     delete: { label: "actions.delete", icon: "delete", shortcuts: ["Del"] },
     delete_all: { label: "actions.delete_all", icon: "delete" },
@@ -58,7 +55,7 @@ export const contextMenuItems: { [key: string]: ContextMenuItem } = {
     newShow: { label: "new.empty_show", icon: "add" },
     newPrivateShow: { label: "new.private", icon: "private" },
     private: { label: "actions.toggle_private", icon: "private" },
-    duplicate: { label: "actions.duplicate", icon: "duplicate", shortcuts: [ctrl + "+D"] },
+    duplicate: { label: "actions.duplicate", icon: "duplicate", shortcuts: ["Ctrl+D"] },
     section: { label: "new.section", icon: "section" },
     // SORT
     sort_shows_by: { label: "sort.sort_by", icon: "sort", items: ["LOAD_sort_shows"] },
@@ -68,9 +65,10 @@ export const contextMenuItems: { [key: string]: ContextMenuItem } = {
     remove: { label: "actions.remove", icon: "remove" },
     remove_group: { label: "actions.remove", icon: "remove" },
     remove_slide: { label: "actions.remove_group", icon: "remove", shortcuts: ["Del"] },
-    delete_slide: { label: "actions.delete", icon: "delete" },
+    delete_slide: { label: "actions.delete_slide", icon: "delete" },
+    delete_group: { label: "actions.delete_group", icon: "delete", shortcuts: ["Del"] },
     slideGroups: { label: "context.changeGroup", icon: "groups", items: ["rename", "recolor", "remove_group", "SEPERATOR", "LOAD_slide_groups"] },
-    selectAll: { label: "context.selectAll", icon: "select", shortcuts: [ctrl + "+A"] },
+    selectAll: { label: "context.selectAll", icon: "select", shortcuts: ["Ctrl+A"] },
     newSlide: { label: "new.slide", icon: "add" },
     // newGroup: { label: "context.createNew", icon: "add" },
     // SLIDE VIEWS
@@ -85,14 +83,16 @@ export const contextMenuItems: { [key: string]: ContextMenuItem } = {
     edit: { label: "menu.edit", icon: "edit" },
     recolor: { label: "actions.recolor", icon: "color" },
     actions: { label: "actions.actions", icon: "actions", items: ["LOAD_actions"] },
-    item_actions: { label: "actions.actions", icon: "actions", items: ["LOAD_item_actions"] },
+    bind_to: { label: "actions.bind_to", icon: "bind", items: ["LOAD_bind_slide"] },
     remove_layers: { label: "actions.remove_layers", icon: "remove_layers", items: ["LOAD_remove_layers"] },
     set_key: { label: "actions.set_key", icon: "chords", items: ["LOAD_keys"] },
     chord_list: { label: "edit.chords", icon: "chords", items: ["LOAD_chord_list"] },
     custom_key: { label: "actions.custom_key", icon: "edit" },
     // ITEM
-    bind_to: { label: "actions.bind_to", icon: "bind", items: ["LOAD_output_list"] },
+    item_actions: { label: "actions.actions", icon: "actions", items: ["LOAD_item_actions"] },
+    item_bind_to: { label: "actions.bind_to", icon: "bind", items: ["LOAD_bind_item"] },
     format: { label: "actions.format", icon: "format", items: ["find_replace", "cut_in_half", "SEPERATOR", "uppercase", "lowercase", "capitalize", "trim"] },
+    dynamic_values: { label: "actions.dynamic_values", icon: "star", items: ["LOAD_dynamic_values"] },
     // stage
     stage: { label: "menu.stage", id: "stage" },
     // formatting
@@ -200,12 +200,14 @@ export const contextMenuLayouts: { [key: string]: string[] } = {
     variable: ["edit", "SEPERATOR", "delete"],
     // TRIGGER
     trigger: ["edit", "SEPERATOR", "delete"],
+    // AUDIO STREAM
+    audio_stream: ["edit", "SEPERATOR", "delete"],
 
     // SHOWS
     // , "copy", "paste"
-    slide: ["slideGroups", "actions", "format", "remove_layers", "slide_transition", "disable", "edit", "SEPERATOR", "duplicate", "delete_slide", "remove_slide"],
-    slideChild: ["slideGroups", "actions", "format", "remove_layers", "slide_transition", "disable", "edit", "SEPERATOR", "duplicate", "delete_slide", "remove_slide"],
-    group: ["rename", "recolor", "disable", "selectAll", "SEPERATOR", "duplicate", "delete"],
+    slide: ["slideGroups", "actions", "bind_to", "format", "remove_layers", "slide_transition", "disable", "edit", "SEPERATOR", "duplicate", "delete_slide", "remove_slide"],
+    slideChild: ["slideGroups", "actions", "bind_to", "format", "remove_layers", "slide_transition", "disable", "edit", "SEPERATOR", "duplicate", "delete_slide", "remove_slide"],
+    group: ["rename", "recolor", "selectAll", "SEPERATOR", "duplicate", "delete_group"],
     global_group: ["edit"],
     // global_group: ["rename"],
     layout: ["rename", "duplicate", "remove"],
@@ -223,7 +225,7 @@ export const contextMenuLayouts: { [key: string]: string[] } = {
     stage_slide: ["move_connections", "rename", "disable", "SEPERATOR", "duplicate", "delete"],
 
     // EDIT
-    edit_box: ["bind_to", "item_actions", "format", "delete", "SEPERATOR", "duplicate", "copy", "paste"],
+    edit_box: ["item_actions", "item_bind_to", "format", "dynamic_values", "delete", "SEPERATOR", "duplicate", "copy", "paste"],
 
     // CALENDAR
     event: ["edit", "duplicate", "delete", "delete_all"],

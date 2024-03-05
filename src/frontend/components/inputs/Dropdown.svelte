@@ -8,6 +8,7 @@
 
     const dispatch = createEventDispatcher()
     export let options: Option[]
+    export let id: string = ""
     export let disabled: boolean = false
     export let center: boolean = false
     export let arrow: boolean = false
@@ -22,10 +23,10 @@
 
     let nextScrollTimeout: any = null
     function wheel(e: any) {
-        if (disabled) return
-        if (nextScrollTimeout) return
-
+        if (disabled || nextScrollTimeout) return
+        // if (!e.ctrlKey && !e.metaKey) return
         e.preventDefault()
+
         let index = options.findIndex((a) => a.name === (value.name || value))
         if (e.deltaY > 0) index = Math.min(options.length - 1, index + 1)
         else index = Math.max(0, index - 1)
@@ -46,6 +47,7 @@
         if (!id) return
 
         setTimeout(() => {
+            if (!self) return
             let activeElem = self.querySelector("#" + id)
             activeElem?.scrollIntoView()
         }, 10)
@@ -65,7 +67,7 @@
 />
 
 <div class:disabled class:center bind:this={self} class="dropdownElem" style="position: relative;{$$props.style || ''}">
-    <button {title} on:click={() => (disabled ? null : (active = !active))} on:wheel={wheel}>
+    <button {id} {title} on:click={() => (disabled ? null : (active = !active))} on:wheel={wheel}>
         {#if arrow}
             <Icon id="expand" size={1.2} white />
         {:else}

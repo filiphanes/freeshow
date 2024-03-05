@@ -1,14 +1,17 @@
 import { get } from "svelte/store"
 import { uid } from "uid"
 import { changeLayout, changeSlideGroups } from "../../show/slides"
-import { activeDrawerTab, activePage, activeProject, activeShow, audioExtensions, drawerTabsData, imageExtensions, media, projects, showsCache, videoExtensions } from "../../stores"
+import { activeDrawerTab, activePage, activeProject, activeShow, audioExtensions, audioStreams, categories, drawerTabsData, imageExtensions, media, projects, scriptureSettings, showsCache, videoExtensions } from "../../stores"
 import { addItem } from "../edit/scripts/itemHelpers"
-import { clone } from "./array"
+import { clone, removeDuplicates } from "./array"
 import { history, historyAwait } from "./history"
 import { getExtension, getFileName, getMediaType, removeExtension } from "./media"
 import { addToPos, getIndexes, mover } from "./mover"
 import { _show } from "./shows"
-import { getSlides } from "../drawer/bible/scripture"
+import { getShortBibleName, getSlides, joinRange } from "../drawer/bible/scripture"
+import type { Show } from "../../../types/Show"
+import { ShowObj } from "../../classes/Show"
+import { checkName } from "./show"
 
 function getId(drag: any): string {
     let id: string = ""
@@ -103,6 +106,8 @@ export const dropActions: any = {
             data = data.map((a: any) => ({ id: a.path, name: removeExtension(a.name), type: "audio" }))
         } else if (drag.id === "player") {
             data = data.map((a: any) => ({ id: a, type: "player" }))
+        } else if (drag.id === "scripture") {
+            return createScriptureShow(drag)
         }
 
         history.newData = { key: "shows", data: [] }
@@ -111,20 +116,39 @@ export const dropActions: any = {
 
         return history
     },
-    all_slides: ({ drag, drop }: any, history: any) => {
-        history.location = { page: "show" }
+    all_slides: ({ drag, drop }: any, h: any) => {
+        h.location = { page: "show" }
+        let templateId = drag.data[0]
 
         if (drag.id === "template") {
-            history.id = "TEMPLATE"
+            h.id = "TEMPLATE"
 
             // TODO: add slide
             // if (trigger) location.layoutSlide = index
             let indexes: number[] = []
-            if (drop.center) indexes.push(drop.index)
-            history.newData = { id: drag.data[0], data: { createItems: true }, indexes }
+            if (drop.center) {
+                // indexes.push(drop.index)
+                // history({ id: "UPDATE", newData: { data: templateId, key: "settings", keys: ["template"] }, oldData: { id: get(activeShow)?.id }, location: { page: "show", id: "show_key" } })
+                // history({ id: "SLIDES", newData: { index: drop.index, replace: { settings: isParent } } })
+
+                let ref = _show().layouts("active").ref()[0]
+                let slideId = ref[drop.index].id
+                let slideSettings = _show().slides([slideId]).get("settings")
+                let oldData: any = { style: clone(slideSettings) }
+                let newData: any = { style: { ...clone(slideSettings), template: templateId } }
+
+                history({
+                    id: "slideStyle",
+                    oldData,
+                    newData,
+                    location: { page: "edit", show: get(activeShow)!, slide: slideId },
+                })
+                return
+            }
+            h.newData = { id: templateId, data: { createItems: true }, indexes }
         }
 
-        return history
+        return h
     },
     navigation: ({ drag, drop }: any, h: any) => {
         if (drop.data !== "all" && get(activeDrawerTab) && (drag.id === "show" || drag.id === "show_drawer")) {
@@ -323,7 +347,7 @@ const slideDrop: any = {
                 if (parentMovedToOwnChildren) return
 
                 children.map((_id: string, childIndex: number) => selected.push(index + childIndex + 1))
-                selected = [...new Set(selected)]
+                selected = removeDuplicates(selected)
             }
 
             sortedLayout = mover(ref, selected, drop.index)
@@ -384,7 +408,7 @@ const slideDrop: any = {
             delete slide.id
             slides[id] = slide
 
-            let parent = ref[newIndex - 1]
+            let parent = ref[newIndex - 1] || { index: -1 }
             if (parent.type === "child") parent = parent.parent
 
             layout = addToPos(layout, [{ id }], parent.index + 1)
@@ -398,7 +422,7 @@ const slideDrop: any = {
         history.id = "SHOW_LAYOUT"
 
         let ref: any = _show().layouts("active").ref()[0][drop.index!]
-        let data: any[] = [...new Set([...(ref?.data?.overlays || []), ...drag.data])]
+        let data: any[] = removeDuplicates([...(ref?.data?.overlays || []), ...drag.data])
 
         history.newData = { key: "overlays", data, dataIsArray: true, indexes: [drop.index] }
         return history
@@ -453,6 +477,20 @@ const slideDrop: any = {
         history.newData = { key: "actions", data, indexes: [drop.index] }
         return history
     },
+    audio_stream: ({ drag, drop }: any, history: any) => {
+        history.id = "SHOW_LAYOUT"
+
+        let streamId = drag.data[0].id
+        let stream = get(audioStreams)[streamId]
+        if (!stream) return
+
+        let ref: any = _show().layouts("active").ref()[0][drop.index!]
+        let data: any = ref.data.actions || {}
+        data.audioStream = { id: streamId, ...stream }
+
+        history.newData = { key: "actions", data, indexes: [drop.index] }
+        return history
+    },
     midi: ({ drag, drop }: any, history: any) => {
         history.id = "SHOW_LAYOUT"
 
@@ -464,4 +502,48 @@ const slideDrop: any = {
         history.newData = { key: "actions", data, indexes: [drop.index] }
         return history
     },
+}
+
+// HELPERS
+
+// WIP duplicate of ScriptureInfo.svelte createSlides()
+function createScriptureShow(drag) {
+    let bibles = drag.data[0]?.bibles
+    if (!bibles) return
+
+    let slides: any = {}
+    let layouts: any[] = []
+
+    let newSlides: any[] = getSlides(drag.data[0])
+    newSlides.forEach((items: any) => {
+        let id = uid()
+        let firstTextItem = items.find((a) => a.lines)
+        slides[id] = { group: firstTextItem?.lines?.[0]?.text?.[0]?.value?.split(" ")?.slice(0, 4)?.join(" ")?.trim() || "", color: null, settings: {}, notes: "", items }
+        layouts.push({ id })
+    })
+
+    let layoutID = uid()
+    // this can be set to private - to only add to project and not in drawer, because it's mostly not used again
+    let show: Show = new ShowObj(false, "scripture", layoutID, new Date().getTime(), get(scriptureSettings).template || false)
+    // add scripture category
+    if (!get(categories).scripture) {
+        categories.update((a) => {
+            a.scripture = { name: "category.scripture", icon: "scripture", default: true }
+            return a
+        })
+    }
+
+    let bibleShowName = `${bibles[0].book} ${bibles[0].chapter},${joinRange(drag.data[0]?.sorted || [])}`
+    show.name = checkName(bibleShowName)
+    if (show.name !== bibleShowName) show.name = checkName(`${bibleShowName} - ${getShortBibleName(bibles[0].version)}`)
+    show.slides = slides
+    show.layouts = { [layoutID]: { name: bibles[0].version || "", notes: "", slides: layouts } }
+
+    let versions = bibles.map((a) => a.version).join(" + ")
+    show.reference = {
+        type: "scripture",
+        data: { collection: get(drawerTabsData).scripture?.activeSubTab || bibles[0].id || "", version: versions, api: bibles[0].api, book: bibles[0].bookId ?? bibles[0].book, chapter: bibles[0].chapter, verses: bibles[0].activeVerses },
+    }
+
+    history({ id: "UPDATE", newData: { data: show, remember: { project: get(activeProject) } }, location: { page: "show", id: "show" } })
 }

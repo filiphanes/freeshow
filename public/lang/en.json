@@ -11,6 +11,21 @@
         "finished": "Finished",
         "system_open": "Open in system"
     },
+    "titlebar": {
+        "file": "File",
+        "edit": "Edit",
+        "view": "View",
+        "help": "Help"
+    },
+    "screen": {
+        "width": "Width",
+        "height": "Height",
+        "pixels": "pixels",
+        "top": "Top",
+        "right": "Right",
+        "bottom": "Bottom",
+        "left": "Left"
+    },
     "about": {
         "check_updates": "Look for updates",
         "made": "Made in Norway by",
@@ -40,6 +55,9 @@
         "options": "More options.",
         "scripture": "Hold Ctrl/Cmd or Shift to select multiple verses."
     },
+    "tips": {
+        "trigger": "Triggers are commonly used to send a HTTP request to change the preset of cameras."
+    },
     "setup": {
         "good_luck": "I hope you find this software useful. Good luck showing! :)",
         "tips": "Find handy tips and tutorials on the website.",
@@ -62,21 +80,6 @@
         "default": "Default",
         "small": "Small",
         "bold": "Bold"
-    },
-    "titlebar": {
-        "file": "File",
-        "edit": "Edit",
-        "view": "View",
-        "help": "Help"
-    },
-    "screen": {
-        "width": "Width",
-        "height": "Height",
-        "pixels": "pixels",
-        "top": "Top",
-        "right": "Right",
-        "bottom": "Bottom",
-        "left": "Left"
     },
     "create_show": {
         "search_web": "Search for song on the web",
@@ -139,6 +142,8 @@
         "speed": "Speed",
         "show": "Show",
         "flip": "Flip",
+        "flip_horizontally": "Flip horizontally",
+        "flip_vertically": "Flip vertically",
         "all": "Folders, images & videos",
         "folder": "Only folders",
         "image": "Only images",
@@ -147,7 +152,8 @@
         "contain": "Contain",
         "fill": "Fill",
         "cover": "Cover",
-        "online": "Online"
+        "online": "Online",
+        "recommended": "Recommended"
     },
     "menu": {
         "show": "Show",
@@ -257,14 +263,13 @@
         "hover": "Hover",
         "focus": "Focus"
     },
-    "buttons": {
-        "changeTheme": "Change Theme"
-    },
     "inputs": {
         "name": "Name",
         "url": "URL",
         "video_id": "Video ID/URL",
         "close_ad": "Close ad on output screen",
+        "start": "Start",
+        "end": "End",
         "change_folder": "Choose another location"
     },
     "tabs": {
@@ -282,9 +287,6 @@
         "triggers": "Triggers",
         "templates": "Templates",
         "web": "Web"
-    },
-    "tips": {
-        "trigger": "Triggers are commonly used to send a HTTP request to change the preset of cameras."
     },
     "category": {
         "all": "All",
@@ -325,6 +327,7 @@
         "timer": "Timer",
         "variable": "Variable",
         "trigger": "Trigger",
+        "audio_stream": "Audio stream",
         "transition": "Transition",
         "delete_show": "Delete show",
         "delete_show_confirmation": "Are you sure you want to delete",
@@ -350,6 +353,7 @@
         "shortcuts": "Shortcuts",
         "icon": "Icons",
         "manage_icons": "Manage icons",
+        "manage_colors": "Manage colors",
         "choose_camera": "Choose camera",
         "initialize": "Welcome to FreeShow",
         "unsaved": "You have not saved yet! Are you sure you want to quit?",
@@ -398,6 +402,7 @@
         "timer": "New timer",
         "variable": "New variable",
         "trigger": "New trigger",
+        "audio_stream": "New audio stream",
         "category": "New category",
         "private": "New private show",
         "folder": "New folder",
@@ -418,7 +423,8 @@
         "list": "List view",
         "lyrics": "Lyrics view",
         "text": "Text edit",
-        "update": "Update show"
+        "update": "Update show",
+        "slide_template": "Slide template"
     },
     "actions": {
         "rename": "Rename",
@@ -437,6 +443,8 @@
         "export": "Export",
         "duplicate": "Duplicate",
         "delete": "Delete",
+        "delete_slide": "Delete slide",
+        "delete_group": "Delete group",
         "delete_all": "Delete all",
         "close": "Close",
         "save": "Save",
@@ -469,11 +477,13 @@
         "unmute": "Unmute",
         "toggle_time_marker": "Toggle time markers",
         "add_time_marker": "Add time marker",
-        "bind_to": "Bind to",
-        "remove_binding": "Remove binding",
+        "bind_to": "Specific outputs",
+        "remove_binding": "Remove specific outputs",
+        "dynamic_values": "Dynamic values",
         "show_timer": "Time until show",
         "hide_timer": "Time until hide",
         "choose_custom": "Choose custom",
+        "add_color": "Add color",
         "format": "Format",
         "find_replace": "Find and replace text",
         "cut_in_half": "Cut in half",
@@ -503,7 +513,7 @@
         "refresh_all_shows": "Get all shows in 'Shows' folder",
         "start_timer": "Start timer",
         "stop_timers": "Stop active timers",
-        "next_after_media": "Next after media",
+        "next_after_media": "Next on media finished",
         "remove_media": "Remove media",
         "remove_layers": "Remove layers",
         "index_select_project": "Select project by index",
@@ -595,8 +605,11 @@
         "slide": "Slide"
     },
     "edit": {
+        "text": "Text",
         "font": "Font",
-        "family": "Family",
+        "family": "Font family",
+        "font_size": "Font size",
+        "text_color": "Text color",
         "style": "Style",
         "lines": "Lines",
         "options": "Options",
@@ -612,11 +625,13 @@
         "size": "Size",
         "chords": "Chords",
         "auto_size": "Auto size",
+        "no_wrap": "Text on one line",
         "line_spacing": "Line spacing",
         "line_height": "Line height",
         "letter_spacing": "Letter spacing",
         "word_spacing": "Word spacing",
         "transform": "Transform",
+        "text_transform": "Text transform",
         "uppercase": "Uppercase",
         "lowercase": "Lowercase",
         "capitalize": "Capitalize",
@@ -628,13 +643,13 @@
         "_title_top": "Align top",
         "_title_bottom": "Align bottom",
         "outline": "Outline",
-        "width": "Width",
         "shadow": "Shadow",
         "shadow_inset": "Shadow inset",
         "offsetX": "Offset X",
         "offsetY": "Offset Y",
         "blur": "Blur",
         "item": "Item",
+        "width": "Width",
         "height": "Height",
         "rotation": "Rotation",
         "tilt": "Tilt",
@@ -656,6 +671,7 @@
         "recent": "Recently edited",
         "enable_stage": "Enable stage",
         "select_stage": "Select stage",
+        "next_slide": "Show next slide",
         "use_slide_index": "Use active index",
         "slide_index": "Slide index",
         "padding": "Padding",
@@ -817,6 +833,7 @@
         "select_display": "Click on the screen where you want to display the output window.",
         "manual_input_hint": "Can't find the display? Click here to manually change the position.",
         "manual_drag_hint": "You can also hold ctrl/cmd over an active output window to manually drag it around.",
+        "identify_screens": "Identify screens",
         "new_output": "New output",
         "enable_key_output": "Enable alpha key output",
         "always_on_top": "Always on top",
@@ -849,7 +866,7 @@
         "change_name": "Change name",
         "show_location": "Show location",
         "data_location": "Data location",
-        "user_data_location": "Save user data at data location",
+        "user_data_location": "Save user settings at 'Data location'",
         "font": "Font",
         "font_family": "Font family",
         "font_size": "Font size",
@@ -869,6 +886,7 @@
         "reset_all": "Reset everything",
         "reset_theme": "Reset theme",
         "reset_themes": "Reset themes",
+        "capitalize_words": "Capitalize words",
         "backup_all": "Backup everything",
         "restore": "Restore",
         "backup_started": "Backing up...",
@@ -943,7 +961,8 @@
         "screens": "Screens",
         "windows": "Windows",
         "cameras": "Cameras",
-        "microphones": "Microphones"
+        "microphones": "Microphones",
+        "audio_streams": "Audio streams"
     },
     "transition": {
         "current_slide": "for current slide",

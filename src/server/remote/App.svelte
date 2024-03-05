@@ -1,17 +1,17 @@
 <script lang="ts">
     import { io } from "socket.io-client"
-    import Button from "./components/Button.svelte"
     import type { TabsObj } from "../../types/Tabs"
-    import Tabs from "./components/Tabs.svelte"
-    import Slide from "./components/slide/Slide.svelte"
-    import { GetLayout, getNextSlide, nextSlide } from "./helpers/get"
-    import Icon from "./components/Icon.svelte"
+    import Button from "./components/Button.svelte"
     import Center from "./components/Center.svelte"
-    import ShowButton from "./components/ShowButton.svelte"
-    import { dateToString } from "./helpers/time"
-    import Slides from "./components/slide/Slides.svelte"
-    import Clear from "./components/slide/Clear.svelte"
+    import Icon from "./components/Icon.svelte"
     import ProjectButton from "./components/ProjectButton.svelte"
+    import ShowButton from "./components/ShowButton.svelte"
+    import Tabs from "./components/Tabs.svelte"
+    import Clear from "./components/slide/Clear.svelte"
+    import Slide from "./components/slide/Slide.svelte"
+    import Slides from "./components/slide/Slides.svelte"
+    import { GetLayout, getNextSlide, nextSlide } from "./helpers/get"
+    import { dateToString } from "./helpers/time"
 
     var dictionary: any = {
         empty: {
@@ -68,6 +68,7 @@
     let activeShow: any = null
     let outShow: any = null
     let outLayout: any = null
+    let styleRes: any = null
     let outSlide: any = null
     let project: null | string = null
     let projects: any[] = []
@@ -127,9 +128,6 @@
                     })
                 })
                 break
-            case "PROJECTS":
-                if (connected) projects = Object.keys(msg.data).map((id) => ({ id, ...msg.data[id] }))
-                break
             case "ACCESS":
                 console.log("ACCESSED")
                 if (rememberPassword && password.length) localStorage.password = password
@@ -157,6 +155,7 @@
                     if (msg.data.slide === undefined) return
                     outSlide = msg.data.slide
                     if (msg.data.layout) outLayout = msg.data.layout
+                    if (msg.data.styleRes) styleRes = msg.data.styleRes
                     if (outSlide === null) outShow = null
                     else if (msg.data.show) {
                         outShow = msg.data.show
@@ -177,8 +176,9 @@
                 break
             case "PROJECTS":
                 if (connected) {
-                    if (!projects) activeTab = "projects"
-                    projects = msg.data
+                    projects = Object.keys(msg.data).map((id) => ({ id, ...msg.data[id] }))
+                    // newest first
+                    projects = projects.sort((a, b) => b.created - a.created)
                 }
                 break
             case "PROJECT":
@@ -211,17 +211,52 @@
     let transition: any = { type: "fade", duration: 500 }
 
     $: layout = outShow ? GetLayout(outShow, outLayout) : null
-    $: console.log(layout, outShow, outLayout)
 
     $: totalSlides = layout ? layout.length : 0
 
     // $: filteredSlides = layout?.map((a, i) => ({...a, index: i})).filter(a => a.disabled !== true)
     function next() {
-        let index = nextSlide(layout, outSlide)
+        if (!layout) {
+            if (activeTab === "show" && activeShow) {
+                // play slide
+                send("OUT", { id: activeShow.id, index: 0, layout: activeShow.settings.activeLayout })
+                outShow = activeShow
+            }
+            return
+        }
+
+        let index = nextSlide(layout, outSlide ?? -1)
         if (index !== null) send("OUT", { id: outShow.id, index, layout: outShow.settings.activeLayout })
+        else {
+            // go to next show in project
+            let currentProjectShows = projects.find((a) => a.id === project)?.shows || []
+            let currentProjectShowIndex = currentProjectShows.findIndex((showRef: any) => showRef.id === activeShow.id)
+
+            let newIndex = currentProjectShowIndex + 1
+            let newProjectShow: any = { type: "." }
+            while (newProjectShow && (newProjectShow.type || "show") !== "show") {
+                newProjectShow = currentProjectShows[newIndex]
+                newIndex++
+            }
+
+            if (!newProjectShow) return
+
+            send("SHOW", newProjectShow.id)
+            activeTab = "show"
+
+            // play slide
+            setTimeout(() => {
+                send("OUT", { id: newProjectShow.id, index: 0, layout: activeShow.settings.activeLayout })
+                outShow = activeShow
+            }, 100)
+        }
     }
     function previous() {
-        let index = nextSlide(layout, outSlide, true)
+        if (!layout) return
+
+        // WIP go to previous show & play last slide
+
+        let index = nextSlide(layout, outSlide ?? layout.length, true)
         if (index !== null) send("OUT", { id: outShow.id, index, layout: outShow.settings.activeLayout })
     }
 
@@ -313,7 +348,18 @@
     }
 
     // TODO: outLocked
+
+    // keyboard shortcuts
+    function keydown(e: any) {
+        if ([" ", "Arrow", "Page"].includes(e.key)) e.preventDefault()
+
+        if ([" ", "ArrowRight", "PageDown"].includes(e.key)) next()
+        else if (["ArrowLeft", "PageUp"].includes(e.key)) previous()
+        else if (e.key === "Escape") send("OUT", "clear")
+    }
 </script>
+
+<svelte:window on:keydown={keydown} />
 
 {#if errors.length}
     <div class="error">
@@ -415,6 +461,7 @@
                                 outShow = activeShow
                             }}
                             {outSlide}
+                            {styleRes}
                         />
                     </div>
                     {#if activeShow.id === outShow?.id}
@@ -437,9 +484,9 @@
                 {#if outShow}
                     <h2>{outShow.name}</h2>
                     <div on:click={click} class="outSlides">
-                        <Slide {outShow} {outSlide} {outLayout} {transition} />
+                        <Slide {outShow} {outSlide} {outLayout} {styleRes} {transition} />
                         {#if nextSlide(layout, outSlide) && getNextSlide(outShow, outSlide, outLayout)}
-                            <Slide {outShow} outSlide={nextSlide(layout, outSlide)} {outLayout} {transition} />
+                            <Slide {outShow} outSlide={nextSlide(layout, outSlide)} {outLayout} {styleRes} {transition} />
                         {:else}
                             <div style="display: flex;align-items: center;justify-content: center;flex: 1;opacity: 0.5;">{dictionary.remote.end}</div>
                         {/if}

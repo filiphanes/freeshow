@@ -64,11 +64,19 @@
         },
         PageDown: (e: any) => {
             if ($activeShow?.type !== "show" && $activeShow?.type !== undefined) return
-            if ($presenterControllerKeys) nextSlide(e)
+
+            if ($presenterControllerKeys) {
+                e.preventDefault()
+                nextSlide(e)
+            }
         },
         PageUp: (e: any) => {
             if ($activeShow?.type !== "show" && $activeShow?.type !== undefined) return
-            if ($presenterControllerKeys) previousSlide(e)
+
+            if ($presenterControllerKeys) {
+                e.preventDefault()
+                previousSlide(e)
+            }
         },
 
         ArrowRight: (e: any) => {
@@ -93,10 +101,14 @@
         },
         Home: (e: any) => {
             if ($activeShow?.type !== "show" && $activeShow?.type !== undefined) return
+
+            e.preventDefault()
             nextSlide(e, true)
         },
         End: (e: any) => {
             if ($activeShow?.type !== "show" && $activeShow?.type !== undefined) return
+
+            e.preventDefault()
             nextSlide(e, false, true)
         },
     }
@@ -180,8 +192,7 @@
     let maxLines: null | number = null
     $: amountOfLinesToShow = currentStyle.lines !== undefined ? Number(currentStyle.lines) : 0
     $: linesIndex = amountOfLinesToShow && outSlide ? outSlide.line || 0 : null
-    $: console.log(ref, outSlide)
-    $: showSlide = outSlide?.index !== undefined && ref ? _show(outSlide.id).slides([ref[outSlide.index].id]).get()[0] : null
+    $: showSlide = outSlide?.index !== undefined && ref ? _show(outSlide.id).slides([ref[outSlide.index]?.id]).get()[0] : null
     $: slideLines = showSlide ? getItemWithMostLines(showSlide) : null
     $: maxLines = slideLines && linesIndex !== null ? (amountOfLinesToShow >= slideLines ? null : Math.ceil(slideLines / amountOfLinesToShow)) : null
 

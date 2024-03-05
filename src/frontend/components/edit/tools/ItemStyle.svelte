@@ -5,17 +5,35 @@
     import { hexToRgb, splitRgb } from "../../helpers/color"
     import { history } from "../../helpers/history"
     import { _show } from "../../helpers/shows"
-    import { getStyles } from "../../helpers/style"
+    import { getFilters, getStyles } from "../../helpers/style"
     import { addFilterString, addStyleString } from "../scripts/textStyle"
     import { itemEdits } from "../values/item"
     import EditValues from "./EditValues.svelte"
+    import { clone } from "../../helpers/array"
 
     export let allSlideItems: Item[]
     export let item: Item | null
 
+    let itemEditValues = clone(itemEdits)
+
     let data: { [key: string]: any } = {}
 
     $: if (item?.style || item === null) data = getStyles(item?.style, true)
+
+    $: itemBackFilters = getStyles(item?.style)["backdrop-filter"]
+    $: if (itemBackFilters) getItemFilters()
+    function getItemFilters() {
+        if (!item) return
+
+        // update backdrop filters
+        let backdropFilters = getFilters(itemBackFilters || "")
+        let defaultBackdropFilters = itemEditValues.backdrop_filters || []
+        itemEditValues.backdrop_filters.forEach((filter: any) => {
+            let value = backdropFilters[filter.key] ?? defaultBackdropFilters.find((a) => a.key === filter.key)?.value
+            let index = itemEditValues.backdrop_filters.findIndex((a: any) => a.key === filter.key)
+            itemEditValues.backdrop_filters[index].value = value
+        })
+    }
 
     onMount(() => {
         getBackgroundOpacity()
@@ -27,9 +45,9 @@
         if (!backgroundValue.includes("rgb")) return
 
         let rgb = splitRgb(backgroundValue)
-        let boIndex = itemEdits.style.findIndex((a) => a.id === "background-opacity")
+        let boIndex = itemEditValues.style.findIndex((a) => a.id === "background-opacity")
         if (boIndex < 0) return
-        itemEdits.style[boIndex].value = rgb.a
+        itemEditValues.style[boIndex].value = rgb.a
     }
     function getOldOpacity() {
         let backgroundValue = data["background-color"] || ""
@@ -42,9 +60,12 @@
     function updateStyle(e: any) {
         let input = e.detail
 
-        if (input.id === "transform") {
-            input.value = addFilterString(data.transform || "", [input.key, input.value])
-            input.key = "transform"
+        console.log(input)
+
+        if (input.id === "backdrop-filter" || input.id === "transform") {
+            let oldString = input.id === "backdrop-filter" ? itemBackFilters : data[input.id]
+            input.value = addFilterString(oldString || "", [input.key, input.value])
+            input.key = input.id
         }
 
         // background opacity
@@ -75,7 +96,7 @@
         // get all selected slides
         if ($selected.id === "slide") {
             let selectedSlides = $selected.data.filter(({ index }) => index !== $activeEdit.slide!)
-            slides.push(...selectedSlides.map(({ index }) => ref[index].id))
+            slides.push(...selectedSlides.map(({ index }) => ref[index]?.id))
 
             slides.forEach((id, i) => {
                 if (i === 0) return
@@ -111,6 +132,7 @@
             allItems = [allItems[0]]
         }
 
+        console.log(values)
         if (!Object.values(values).length) return
 
         if ($activeEdit.id) {
@@ -135,5 +157,5 @@
 </script>
 
 {#key item}
-    <EditValues edits={itemEdits} styles={data} {item} on:change={updateStyle} />
+    <EditValues edits={itemEditValues} defaultEdits={clone(itemEdits)} styles={data} {item} on:change={updateStyle} />
 {/key}

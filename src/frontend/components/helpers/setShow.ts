@@ -1,8 +1,10 @@
 import { get } from "svelte/store"
 import { SHOW } from "../../../types/Channels"
 import type { Show } from "../../../types/Show"
-import { cachedShowsData, notFound, shows, showsCache, showsPath, textCache } from "../../stores"
+import { cachedShowsData, notFound, saved, shows, showsCache, showsPath, textCache } from "../../stores"
 import { updateCachedShow } from "./show"
+import { uid } from "uid"
+import { destroy } from "../../utils/request"
 
 export function setShow(id: string, value: "delete" | Show): Show {
     let previousValue: Show
@@ -12,9 +14,16 @@ export function setShow(id: string, value: "delete" | Show): Show {
         let showRef = get(shows)[id]
         if (showRef && value) {
             value.name = showRef.name
-            value.category = showRef.category
-            value.timestamps = showRef.timestamps
+            value.category = showRef.category || null
+            value.timestamps = showRef.timestamps || {}
             if (showRef.private) value.private = true
+
+            // fix "broken" shows:
+            if (!value.settings) value.settings = { activeLayout: "", template: null }
+            if (!value.meta) value.meta = {}
+            if (!value.slides) value.slides = {}
+            if (!value.layouts) value.layouts = {}
+            if (!value.media) value.media = {}
         }
     }
 
@@ -64,6 +73,8 @@ export function setShow(id: string, value: "delete" | Show): Show {
 }
 
 export async function loadShows(s: string[]) {
+    let savedWhenLoading: boolean = get(saved)
+
     return new Promise((resolve) => {
         let count = 0
 
@@ -83,8 +94,14 @@ export async function loadShows(s: string[]) {
         })
 
         // RECEIVE
-        window.api.receive(SHOW, (msg: any) => {
+        let listenerId = uid()
+        window.api.receive(SHOW, receiveShow, listenerId)
+        function receiveShow(msg: any) {
             count++
+
+            // prevent receiving multiple times
+            if (count >= s.length + 1) return
+
             if (msg.error) {
                 notFound.update((a) => {
                     a.show.push(msg.id)
@@ -101,15 +118,21 @@ export async function loadShows(s: string[]) {
 
                 setShow(msg.id || msg.content[0], msg.content[1])
             }
-            // console.log(count, s, msg, "LOAD")
 
-            if (count >= s.length) {
+            if (count >= s.length) setTimeout(finished, 50)
+        }
+        if (count >= s.length) finished()
+
+        function finished() {
+            if (savedWhenLoading) {
                 setTimeout(() => {
-                    resolve("loaded")
-                }, 50)
+                    saved.set(true)
+                }, 100)
             }
-        })
-        if (count >= s.length) resolve("loaded")
+
+            destroy(SHOW, listenerId)
+            resolve("loaded")
+        }
     })
 }
 

@@ -14,6 +14,7 @@ import {
     activeRename,
     activeShow,
     audioFolders,
+    audioStreams,
     currentOutputSettings,
     currentWindow,
     dictionary,
@@ -54,8 +55,9 @@ import { updateThemeValues } from "../../utils/updateSettings"
 import { stopMediaRecorder } from "../drawer/live/recorder"
 import { playPauseGlobal } from "../drawer/timers/timers"
 import { addChords } from "../edit/scripts/chords"
+import { getSelectionRange } from "../edit/scripts/textStyle"
 import { exportProject } from "../export/project"
-import { clone } from "../helpers/array"
+import { clone, removeDuplicates } from "../helpers/array"
 import { copy, cut, deleteAction, duplicate, paste, selectAll } from "../helpers/clipboard"
 import { GetLayoutRef } from "../helpers/get"
 import { history, redo, undo } from "../helpers/history"
@@ -63,17 +65,20 @@ import { getExtension, getFileName, getMediaStyle, getMediaType, removeExtension
 import { defaultOutput, getActiveOutputs, setOutput } from "../helpers/output"
 import { select } from "../helpers/select"
 import { updateShowsList } from "../helpers/show"
-import { sendMidi } from "../helpers/showActions"
+import { dynamicValueText, sendMidi } from "../helpers/showActions"
 import { _show } from "../helpers/shows"
 import { defaultThemes } from "../settings/tabs/defaultThemes"
 import { OPEN_FOLDER } from "./../../../types/Channels"
 import { activeProject } from "./../../stores"
+import { getShortBibleName } from "../drawer/bible/scripture"
 
 export function menuClick(id: string, enabled: boolean = true, menu: any = null, contextElem: any = null, actionItem: any = null, sel: any = {}) {
+    if (!actions[id]) return console.log("MISSING CONTEXT: ", id)
+
     let obj = { sel, actionItem, enabled, contextElem, menu }
     console.log("MENU CLICK: " + id, obj)
-    if (actions[id]) return actions[id](obj)
-    console.log("MISSING CONTEXT: ", id)
+
+    actions[id](obj)
 }
 
 const actions: any = {
@@ -138,6 +143,7 @@ const actions: any = {
         if (get(activePage) === "edit") refreshEditSlide.set(true)
     },
     delete_slide: (obj: any) => actions.delete(obj),
+    delete_group: (obj: any) => actions.delete(obj),
     delete: (obj: any) => {
         if (deleteAction(obj.sel)) return
 
@@ -274,20 +280,13 @@ const actions: any = {
         let versions: string[] = obj.sel.data
         // remove collections
         versions = versions.filter((id) => !Object.entries(get(scriptures)).find(([tabId, a]) => (tabId === id || a.id === id) && a.collection !== undefined))
-        console.log(versions)
         if (versions.length < 2) return
-
-        console.log(get(scriptures))
 
         let name = ""
         versions.forEach((id, i) => {
             if (i > 0) name += " + "
             let bibleName: string = Object.values(get(scriptures)).find((a) => a.id === id)?.name || ""
-            // shorten
-            bibleName = bibleName.replace(/[^a-zA-Z ]+/g, "").trim()
-            if (bibleName.split(" ").length < 2) bibleName = bibleName.slice(0, 3)
-            else bibleName = bibleName.split(" ").reduce((current, word) => (current += word[0]), "")
-            name += bibleName
+            name += getShortBibleName(bibleName)
         })
 
         scriptures.update((a) => {
@@ -388,21 +387,7 @@ const actions: any = {
             })
             return
         }
-        if (obj.sel.id === "group") {
-            let ref = _show().layouts("active").ref()[0]
-            let groupIds: string[] = obj.sel.data.map(({ id }) => id)
-            let disabled = !ref.find((a) => a.id === groupIds[0]).data.disabled
-            let allGroupSlidesInLayout = ref.filter((a) => groupIds.includes(a.parent?.id || a.id))
 
-            allGroupSlidesInLayout.forEach((slideRef) => {
-                if (slideRef.type === "child") {
-                    _show().layouts("active").slides([slideRef.parent.index]).children([slideRef.id]).set({ key: "disabled", value: disabled })
-                    return
-                }
-
-                _show().layouts("active").slides([slideRef.index]).set({ key: "disabled", value: disabled })
-            })
-        }
         if (obj.sel.id === "stage") {
             // history({ id: "changeStage", newData: {key: "disabled", value: }, location: { page: "stage", slide: obj.sel.data.map(({id}: any) => (id)) } })
             stageShows.update((a) => {
@@ -438,6 +423,8 @@ const actions: any = {
             activePopup.set("variable")
         } else if (obj.sel.id === "trigger") {
             activePopup.set("trigger")
+        } else if (obj.sel.id === "audio_stream") {
+            activePopup.set("audio_stream")
         } else if (obj.sel.id === "midi") {
             popupData.set(obj.sel.data[0])
             activePopup.set("midi")
@@ -458,6 +445,7 @@ const actions: any = {
         let data = get(selected).data[0]
 
         let item: any = _show().slides([data.slideId]).items([data.itemIndex]).get()[0][0]
+        if (!item) return
 
         let newLines: any = clone(item.lines)
         if (data.chord) {
@@ -645,6 +633,18 @@ const actions: any = {
 
     selectAll: (obj: any) => selectAll(obj.sel),
 
+    bind_slide: (obj: any) => {
+        let layoutSlide: number = obj.sel.data[0]?.index || 0
+        let ref = _show().layouts("active").ref()[0]
+
+        let bindings: string[] = ref[layoutSlide]?.data?.bindings || []
+        let outputId = obj.menu.id
+        let existingIndex = bindings.indexOf(outputId)
+        if (existingIndex >= 0) bindings.splice(existingIndex, 1)
+        else bindings.push(outputId)
+
+        history({ id: "SHOW_LAYOUT", newData: { key: "bindings", data: bindings, indexes: [layoutSlide], dataIsArray: true } })
+    },
     // bind item
     bind_item: (obj: any) => {
         let id = obj.menu?.id
@@ -693,6 +693,66 @@ const actions: any = {
             location: { page: "edit", show: get(activeShow)!, slide: slideRef.id, items, override: "itembind_" + slideRef.id + "_items_" + items.join(",") },
         })
         // _show().slides([slideID!]).set({ key: "items", value: items })
+    },
+    dynamic_values: (obj: any) => {
+        let id = obj.menu.id
+
+        let sel = getSelectionRange()
+        let lineIndex = sel.findIndex((a) => a?.start !== undefined)
+        console.log(sel, lineIndex)
+        if (lineIndex < 0) return
+
+        let edit = get(activeEdit)
+        let caret = { line: lineIndex || 0, pos: sel[lineIndex].start || 0 }
+
+        if (edit.id) {
+            if (edit.type === "overlay") {
+                overlays.update((a) => {
+                    a[edit.id!].items = updateItemText(a[edit.id!].items)
+                    return a
+                })
+            } else if (edit.type === "template") {
+                templates.update((a) => {
+                    a[edit.id!].items = updateItemText(a[edit.id!].items)
+                    console.log(a[edit.id!].items)
+                    return a
+                })
+            }
+
+            refreshEditSlide.set(true)
+            return
+        }
+
+        let showId = get(activeShow)?.id || ""
+        let ref = _show(showId).layouts("active").ref()[0]
+        let slideId = ref[edit.slide || 0]?.id || ""
+
+        showsCache.update((a) => {
+            a[showId].slides[slideId].items = updateItemText(a[showId].slides[slideId].items)
+            return a
+        })
+
+        refreshEditSlide.set(true)
+
+        function updateItemText(items) {
+            let replaced = false
+
+            items[edit.items[0]]?.lines?.[caret.line].text.forEach((text) => {
+                if (replaced) return
+
+                let value = text.value
+                if (value.length < caret.pos) {
+                    caret.pos -= value.length
+                    return
+                }
+
+                let newValue = value.slice(0, caret.pos) + dynamicValueText(id) + value.slice(caret.pos)
+                text.value = newValue
+                replaced = true
+            })
+
+            return items
+        }
     },
 
     // formats
@@ -894,6 +954,23 @@ function changeSlideAction(obj: any, id: string) {
         return
     }
 
+    if (id === "audioStream") {
+        let actions = clone(ref[layoutSlide]?.data?.actions) || {}
+        popupData.set({ dropdown: true, index: layoutSlide })
+
+        if (!actions[id]) {
+            activePopup.set("audio_stream")
+            return
+        }
+
+        let data = get(audioStreams)[actions[id]]
+
+        selected.set({ id: "audio_stream", data: [{ ...data, id: actions[id] }] })
+        activePopup.set("audio_stream")
+
+        return
+    }
+
     if (id === "nextTimer") {
         let nextTimer = clone(ref[layoutSlide]?.data?.nextTimer) || 0
 
@@ -937,7 +1014,7 @@ export function removeGroup(data: any) {
 
         removeSlideIds.push(refSlide.id)
     })
-    removeSlideIds = [...new Set(removeSlideIds)]
+    removeSlideIds = removeDuplicates(removeSlideIds)
     if (!removeSlideIds.length) return
 
     let newParentIds: any = {}
@@ -1012,7 +1089,7 @@ export function removeSlide(data: any, type: "delete" | "remove" = "delete") {
 
     let slides = parents
     // don't do anything with the children if it's removing parents
-    if (type === "remove") slides = [...new Set(slides)]
+    if (type === "remove") slides = removeDuplicates(slides)
     else slides.push(...childs)
 
     if (!slides.length) return
@@ -1025,6 +1102,8 @@ export function format(id: string, obj: any, data: any = null) {
 
     let editing = get(activeEdit)
     let items = editing.items || []
+
+    // WIP let slide = getEditSlide()
 
     if (editing.id) {
         let currentItems: any[] = []

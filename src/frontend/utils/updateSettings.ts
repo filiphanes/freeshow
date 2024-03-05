@@ -9,6 +9,7 @@ import {
     activeProject,
     alertUpdates,
     audioFolders,
+    audioStreams,
     autoOutput,
     autosave,
     calendarAddShow,
@@ -35,7 +36,6 @@ import {
     mediaOptions,
     midiIn,
     openedFolders,
-    os,
     outLocked,
     overlayCategories,
     overlays,
@@ -107,10 +107,12 @@ export function updateSettings(data: any) {
             return a
         })
 
-        restartOutputs()
+        // wait until content is loaded
+        setTimeout(() => {
+            restartOutputs()
+            if (get(autoOutput)) setTimeout(() => displayOutputs({}, true), 500)
+        }, 1500)
     }
-    // if (data.outputPosition) send(OUTPUT, ["POSITION"], data.outputPosition)
-    // if (data.autoOutput) send(OUTPUT, ["DISPLAY"], { enabled: true, screen: data.outputScreen })
 
     // remote
     let disabled = data.disabledServers || {}
@@ -137,9 +139,7 @@ export function updateSettings(data: any) {
 
     loaded.set(true)
 
-    // setTimeout(() => {
     window.api.send("LOADED")
-    // }, 800)
 }
 
 export function restartOutputs() {
@@ -155,7 +155,6 @@ export function updateThemeValues(themes: any) {
 
     Object.entries(themes.colors).forEach(([key, value]: any) => document.documentElement.style.setProperty("--" + key, value))
     Object.entries(themes.font).forEach(([key, value]: any) => {
-        // || themeId === "default"
         if (key === "family" && (!value || value === "sans-serif")) value = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif'
         document.documentElement.style.setProperty("--font-" + key, value)
     })
@@ -192,23 +191,13 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
         // start overlays
         setOutput("overlays", v, false, null, true)
     },
-    os: (v: any) => os.set(v),
-    // TODO: get device lang
+    os: (v: any) => console.log("saved os:", v),
     language: (v: any) => {
         language.set(v)
         setLanguage(v)
     },
-    // events: (v: any) => events.set(v),
     alertUpdates: (v: any) => alertUpdates.set(v === false ? false : true),
-    autoOutput: (v: any) => {
-        autoOutput.set(v)
-
-        if (v) {
-            setTimeout(() => {
-                displayOutputs({}, true)
-            }, 500)
-        }
-    },
+    autoOutput: (v: any) => autoOutput.set(v),
     maxConnections: (v: any) => maxConnections.set(v),
     ports: (v: any) => ports.set(v),
     disabledServers: (v: any) => disabledServers.set(v),
@@ -248,16 +237,16 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
     slidesOptions: (v: any) => slidesOptions.set(v),
     splitLines: (v: any) => splitLines.set(v),
     templateCategories: (v: any) => templateCategories.set(v),
-    // templates: (v: any) => templates.set(v),
     timers: (v: any) => timers.set(v),
     variables: (v: any) => variables.set(v),
     triggers: (v: any) => triggers.set(v),
+    audioStreams: (v: any) => audioStreams.set(v),
     theme: (v: any) => theme.set(v),
     transitionData: (v: any) => transitionData.set(v),
-    // themes: (v: any) => themes.set(v),
     imageExtensions: (v: any) => {
         // set this in case it's not up to date with stores
         if (!v.includes("webp")) v.push("webp")
+        if (!v.includes("avif")) v.push("avif")
         imageExtensions.set(v)
     },
     videoExtensions: (v: any) => videoExtensions.set(v),
@@ -269,5 +258,8 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
     customizedIcons: (v: any) => customizedIcons.set(v),
     driveData: (v: any) => driveData.set(v),
     calendarAddShow: (v: any) => calendarAddShow.set(v),
-    special: (v: any) => special.set(v),
+    special: (v: any) => {
+        if (v.capitalize_words === undefined) v.capitalize_words = "Jesus, God"
+        special.set(v)
+    },
 }

@@ -193,16 +193,24 @@ export function playMidiIn(msg) {
     let midi = get(midiIn)[msg.id]
     if (!midi) return
 
-    if (midi.values.velocity < 0) msg.values.velocity = midi.values.velocity
+    let is_index = midi.action?.includes("index_") ?? false
+    if (is_index) {
+        midi.values.velocity = msg.values.velocity
+    } else if (midi.values.velocity < 0) msg.values.velocity = midi.values.velocity
     if (JSON.stringify(midi.values) !== JSON.stringify(msg.values)) return
 
     if (midi.action) {
-        let index = midi.values.velocity
-        if (midi.action.includes("index_") && index < 0) {
+        let index = msg.values.velocity
+        // the select slide index from velocity can't select slide 0 as a NoteOn with velocity 0 is detected as NoteOff
+        // velocity of 0 currently bypasses the note on/off
+        if (midi.type !== msg.type && index !== 0) return
+
+        if (is_index && index < 0) {
             newToast("$toast.midi_no_velocity")
             index = 0
         }
         midiActions[midi.action](midi.actionData, index)
+
         return
     }
 

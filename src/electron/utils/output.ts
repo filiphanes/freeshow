@@ -1,13 +1,12 @@
-import { BrowserWindow } from "electron"
-import { join } from "path"
-import { isProd, mainWindow, toApp } from ".."
-import { MAIN, OUTPUT, STARTUP } from "../../types/Channels"
+import { BrowserWindow, Rectangle, screen } from "electron"
+import { isMac, loadWindowContent, mainWindow, toApp } from ".."
+import { MAIN, OUTPUT } from "../../types/Channels"
 import { Message } from "../../types/Socket"
-import { startCapture, stopCapture, updatePreviewResolution } from "../ndi/capture"
+import { requestPreview, stageWindows, startCapture, stopCapture, updatePreviewResolution } from "../ndi/capture"
 import { createSenderNDI, stopSenderNDI } from "../ndi/ndi"
-import { Output } from "./../../types/Output"
-import { outputOptions } from "./windowOptions"
 import { setDataNDI } from "../ndi/talk"
+import { Output } from "./../../types/Output"
+import { outputOptions, screenIdentifyOptions } from "./windowOptions"
 
 export let outputWindows: { [key: string]: BrowserWindow } = {}
 
@@ -16,15 +15,12 @@ export let outputWindows: { [key: string]: BrowserWindow } = {}
 async function createOutput(output: Output) {
     let id: string = output.id || ""
 
-    if (outputWindows[id]) {
-        // WIP has to restart because capture don't work when window is hidden...
-        removeOutput(id, output)
-
-        return
-    }
+    if (outputWindows[id]) return removeOutput(id, output)
 
     outputWindows[id] = createOutputWindow({ ...output.bounds, alwaysOnTop: output.alwaysOnTop !== false, kiosk: output.kioskMode === true, backgroundColor: output.transparent ? "#00000000" : "#000000" }, id, output.name)
     updateBounds(output)
+
+    if (output.stageOutput) stageWindows.push(id)
 
     setTimeout(() => {
         startCapture(id, { ndi: output.ndi || false }, (output as any).rate)
@@ -50,33 +46,13 @@ function createOutputWindow(options: any, id: string, name: string) {
     // window.setAutoHideMenuBar(true) // hide menubar
 
     window.setSkipTaskbar(options.skipTaskbar) // hide from taskbar
-    if (process.platform === "darwin") window.minimize() // hide on mac
+    if (isMac) window.minimize() // hide on mac
 
     if (options.alwaysOnTop) window.setAlwaysOnTop(true, "pop-up-menu", 1)
     // window.setVisibleOnAllWorkspaces(true)
 
-    const url: string = isProd ? `file://${join(__dirname, "..", "..", "..", "public", "index.html")}` : "http://localhost:3000"
-
-    window.loadURL(url).catch((err) => {
-        console.error(JSON.stringify(err))
-    })
-
-    window.on("ready-to-show", () => {
-        mainWindow?.focus()
-        window!.setMenu(null)
-        window!.setTitle(name || "Output")
-    })
-
-    window.webContents.on("did-finish-load", () => {
-        window!.webContents.send(STARTUP, { channel: "TYPE", data: "output" })
-    })
-
-    window.on("move", (e: any) => {
-        if (!moveEnabled || updatingBounds) return e.preventDefault()
-
-        let bounds = window?.getBounds()
-        toApp(OUTPUT, { channel: "MOVE", data: { id, bounds } })
-    })
+    loadWindowContent(window, true)
+    setWindowListeners(window, { id, name })
 
     // open devtools
     // if (!isProd) window.webContents.openDevTools()
@@ -84,8 +60,23 @@ function createOutputWindow(options: any, id: string, name: string) {
     return window
 }
 
-export function closeAllOutputs() {
-    Object.keys(outputWindows).forEach(removeOutput)
+function setWindowListeners(window: BrowserWindow, { id, name }: { [key: string]: string }) {
+    window.on("ready-to-show", () => {
+        mainWindow?.focus()
+        window.setMenu(null)
+        window.setTitle(name || "Output")
+    })
+
+    window.on("move", (e: any) => {
+        if (!moveEnabled || updatingBounds) return e.preventDefault()
+
+        let bounds = window.getBounds()
+        toApp(OUTPUT, { channel: "MOVE", data: { id, bounds } })
+    })
+}
+
+export async function closeAllOutputs() {
+    await Promise.all(Object.keys(outputWindows).map(removeOutput))
 }
 
 async function removeOutput(id: string, reopen: any = null) {
@@ -117,17 +108,7 @@ function displayOutput(data: any) {
     let window: BrowserWindow = outputWindows[data.output?.id]
 
     if (data.enabled === "toggle") data.enabled = !window?.isVisible()
-
-    if (!data.enabled) {
-        let windows = [window]
-        if (!windows[0]) {
-            windows = Object.values(outputWindows)
-        }
-
-        windows.forEach(hideWindow)
-        if (data.one !== true) toApp(OUTPUT, { channel: "DISPLAY", data })
-        return
-    }
+    if (data.enabled !== false) data.enabled = true
 
     if (!window || window.isDestroyed()) {
         if (!data.output) return
@@ -139,25 +120,55 @@ function displayOutput(data: any) {
 
     /////
 
-    let bounds = data.output.bounds
-    let xDif = bounds?.x - mainWindow!.getBounds().x
-    let yDif = bounds?.y - mainWindow!.getBounds().y
+    if (data.autoPosition && !data.force) data.output.bounds = getSecondDisplay(data.output.bounds)
+    let bounds: Rectangle = data.output.bounds
+    let windowNotCoveringMain: boolean = isNotCovered(mainWindow!.getBounds(), bounds)
 
-    const margin = 50
-    let windowNotCoveringMain: boolean = xDif > margin || yDif < -margin || (xDif < -margin && yDif > margin)
-
-    if (bounds && (data.force || window.isAlwaysOnTop() === false || windowNotCoveringMain)) {
+    if (data.enabled && bounds && (data.force || window.isAlwaysOnTop() === false || windowNotCoveringMain)) {
         showWindow(window)
 
         if (bounds) updateBounds(data.output)
     } else {
-        hideWindow(window)
+        hideWindow(window, data.output)
 
+        if (data.enabled && !data.auto) toApp(MAIN, { channel: "ALERT", data: "error.display" })
         data.enabled = false
-        if (!data.auto) toApp(MAIN, { channel: "ALERT", data: "error.display" })
     }
 
-    toApp(OUTPUT, { channel: "DISPLAY", data })
+    if (data.one !== true) toApp(OUTPUT, { channel: "DISPLAY", data })
+}
+
+function getSecondDisplay(bounds: Rectangle) {
+    let displays = screen.getAllDisplays()
+    if (displays.length !== 2) return bounds
+
+    let mainWindowBounds = mainWindow!.getBounds()
+    let amountCoveredByWindow = amountCovered(displays[1].bounds, mainWindowBounds)
+
+    let secondDisplay = displays[1]
+    if (amountCoveredByWindow > 0.5) secondDisplay = displays[0]
+
+    return secondDisplay.bounds
+}
+
+function isNotCovered(mainBounds: Rectangle, secondBounds: Rectangle) {
+    let xDif = secondBounds?.x - mainBounds.x
+    let yDif = secondBounds?.y - mainBounds.y
+
+    const margin = 50
+    let secondNotCoveringMain: boolean = xDif > margin || yDif < -margin || (xDif < -margin && yDif > margin)
+    return secondNotCoveringMain
+}
+
+function amountCovered(displayBounds: Rectangle, windowBounds: Rectangle) {
+    const overlapX = Math.max(0, Math.min(displayBounds.x + displayBounds.width, windowBounds.x + windowBounds.width) - Math.max(displayBounds.x, windowBounds.x))
+    const overlapY = Math.max(0, Math.min(displayBounds.y + displayBounds.height, windowBounds.y + windowBounds.height) - Math.max(displayBounds.y, windowBounds.y))
+    const overlapArea = overlapX * overlapY
+
+    const totalArea = displayBounds.width * displayBounds.height
+    const overlapAmount = overlapArea / totalArea
+
+    return overlapAmount
 }
 
 // MacOS Menu Bar
@@ -168,17 +179,19 @@ function displayOutput(data: any) {
 
 function showWindow(window: BrowserWindow) {
     if (!window || window.isDestroyed()) return
-    window.showInactive()
 
+    window.showInactive()
     window.moveTop()
 }
 
-function hideWindow(window: BrowserWindow) {
+function hideWindow(window: BrowserWindow, data: any) {
     if (!window || window.isDestroyed()) return
 
     window.setKiosk(false)
     window.hide()
 
+    // WIP has to restart because window is unresponsive when hidden again (until showed again)...
+    console.log("RESTARTING OUTPUT:", data.id)
     toApp(OUTPUT, { channel: "RESTART" })
 }
 
@@ -202,12 +215,11 @@ function updateBounds(data: any) {
     if (!window || window.isDestroyed()) return
 
     disableWindowMoveListener()
-
     window.setBounds(data.bounds)
+
     // has to be set twice to work first time
     setTimeout(() => {
         if (!window || window.isDestroyed()) return
-
         window.setBounds(data.bounds)
     }, 10)
 }
@@ -267,6 +279,9 @@ const outputResponses: any = {
     TO_FRONT: (data: any) => moveToFront(data),
 
     PREVIEW_RESOLUTION: (data: any) => updatePreviewResolution(data),
+    REQUEST_PREVIEW: (data: any) => requestPreview(data),
+
+    IDENTIFY_SCREENS: (data: any) => identifyScreens(data),
 }
 
 export function receiveOutput(_e: any, msg: Message) {
@@ -277,17 +292,59 @@ export function receiveOutput(_e: any, msg: Message) {
 }
 
 function sendToOutputWindow(msg: any) {
-    Object.entries(outputWindows).forEach(([id, window]: any) => {
+    Object.entries(outputWindows).forEach(sendToWindow)
+
+    function sendToWindow([id, window]: any) {
         if ((msg.data?.id && msg.data.id !== id) || window.isDestroyed()) return
 
         let tempMsg: any = JSON.parse(JSON.stringify(msg))
-
-        // only send output with matching id
-        if (msg.channel === "OUTPUTS") {
-            if (!msg.data?.[id]) return
-            tempMsg.data = { [id]: msg.data[id] }
-        }
+        if (msg.channel === "OUTPUTS") tempMsg = onlySendToMatchingId(tempMsg, id)
 
         window.webContents.send(OUTPUT, tempMsg)
-    })
+    }
+
+    function onlySendToMatchingId(tempMsg: any, id: string) {
+        if (!msg.data?.[id]) return tempMsg
+
+        tempMsg.data = { [id]: msg.data[id] }
+        return tempMsg
+    }
+}
+
+export function sendToWindow(id: string, msg: any) {
+    let window = outputWindows[id]
+    if (!window || window.isDestroyed()) return
+
+    window.webContents.send(OUTPUT, msg)
+}
+
+// create numbered outputs for each screen
+let identifyActive: boolean = false
+const IDENTIFY_TIMEOUT: number = 3000
+function identifyScreens(screens: any[]) {
+    if (identifyActive) return
+    identifyActive = true
+
+    let activeWindows: any[] = screens.map(createIdentifyScreen)
+
+    setTimeout(() => {
+        activeWindows.forEach((window) => {
+            window.destroy()
+        })
+
+        identifyActive = false
+    }, IDENTIFY_TIMEOUT)
+}
+
+function createIdentifyScreen(screen: any, i: number) {
+    let window: BrowserWindow | null = new BrowserWindow(screenIdentifyOptions)
+    window.setBounds(screen.bounds)
+    window.loadFile("public/identify.html")
+
+    window.webContents.on("did-finish-load", sendNumberToScreen)
+    function sendNumberToScreen() {
+        window!.webContents.send("NUMBER", i + 1)
+    }
+
+    return window
 }

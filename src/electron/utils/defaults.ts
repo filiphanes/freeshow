@@ -71,7 +71,7 @@ export const defaultSettings: { [key in SaveListSettings]: any } = {
     splitLines: 0,
     defaultProjectName: "date",
     videoExtensions: ["mp4", "mov", "wmv", "avi", "avchd", "flv", "mkv", "webm", "mpeg", "m4v"],
-    imageExtensions: ["tif", "tiff", "bmp", "jpg", "jpeg", "gif", "png", "eps", "jfif", "webp"],
+    imageExtensions: ["tif", "tiff", "bmp", "jpg", "jpeg", "gif", "png", "eps", "jfif", "webp", "avif"],
     theme: "default",
     transitionData: {
         text: { type: "fade", duration: 500, easing: "sine" },
@@ -104,6 +104,7 @@ export const defaultSyncedSettings: { [key in SaveListSyncedSettings]: any } = {
     timers: {},
     variables: {},
     triggers: {},
+    audioStreams: {},
     scriptures: {
         kjv: { name: "King James (Authorised) Version", api: true, id: "de4e12af7f28f599-02" },
         asv: { name: "The Holy Bible, American Standard Version", api: true, id: "06125adad2d5898a-01" },

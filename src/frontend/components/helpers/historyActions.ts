@@ -8,8 +8,9 @@ import { clone, keysToID } from "./array"
 import { EMPTY_SHOW_SLIDE } from "./empty"
 import { _updaters } from "./historyHelpers"
 import { addToPos } from "./mover"
-import { _show } from "./shows"
 import { loadShows } from "./setShow"
+import { _show } from "./shows"
+import { getTemplateText } from "./output"
 
 // TODO: move history switch to actions
 
@@ -689,7 +690,7 @@ export const historyActions = ({ obj, undo = null }: any) => {
                 data.previousData = { template: show.settings.template, slides: clone(slides) }
                 let templateId: string = data.id
 
-                _show(data.remember.showId).set({ key: "settings.template", value: slideId ? null : templateId })
+                if (templateId) _show(data.remember.showId).set({ key: "settings.template", value: slideId ? null : templateId })
 
                 let template = clone(get(templates)[templateId])
                 updateSlidesWithTemplate(template)
@@ -709,21 +710,28 @@ export const historyActions = ({ obj, undo = null }: any) => {
             else obj.newData = clone(data)
 
             function updateSlidesWithTemplate(template: any) {
-                if (!template?.items?.length) return
+                // if (!template?.items?.length) return
 
                 console.log("TEMPLATE", template)
                 console.log(slides)
+                // TODO: use mergeWithTemplate() in output.ts
 
                 showsCache.update((a) => {
                     Object.entries(slides).forEach(([id, slide]: any) => {
                         if ((slideId && slideId !== id) || !slide) return
 
+                        let slideTemplate = template
+                        if (slide.settings?.template) slideTemplate = clone(get(templates)[slide.settings.template]) || template
+                        if (!slideTemplate?.items?.length) return
+
                         // roll items around
                         if (createItems) slide.items = [...slide.items.slice(1), slide.items[0]].filter((a) => a)
                         // let addedItems = 0
 
+                        // TODO: don't remove extra items
+
                         let itemTypeIndex: any = {}
-                        template.items.forEach((item: any) => {
+                        slideTemplate.items.forEach((item: any) => {
                             // find the same type at same index
                             let type: ItemType = item.type || "text"
                             if (itemTypeIndex[type] === undefined) itemTypeIndex[type] = -1
@@ -741,10 +749,10 @@ export const historyActions = ({ obj, undo = null }: any) => {
 
                             // add item
                             if (itemIndex < 0) {
-                                if (!createItems) return
+                                if (!createItems && (!slide.settings?.template || item.lines)) return
 
                                 // remove text from template & add to slide
-                                if (item.lines) item.lines = item.lines.map((line) => ({ align: line.align, text: [{ style: line.text?.[0]?.style, value: "" }] }))
+                                if (item.lines) item.lines = item.lines.map((line) => ({ align: line.align, text: [{ style: line.text?.[0]?.style, value: getTemplateText(line.text?.[0]?.value) }] }))
                                 slide.items.push(item)
                                 // slide.items = [item, ...slide.items]
                                 // addedItems++
@@ -780,8 +788,8 @@ export const historyActions = ({ obj, undo = null }: any) => {
                         })
 
                         slide.items.forEach((item: any, i: number) => {
-                            // remove item if template don't have it and it's empty
-                            if (i < template.items.length) return
+                            // remove item if textbox, and template don't have it, and it's empty
+                            if (!item.lines || i < slideTemplate.items.length) return
                             let text: number = item.lines?.reduce((value, line) => (value += line.text?.reduce((value, text) => (value += text.value.length), 0)), 0)
                             if (text) return
 

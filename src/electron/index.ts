@@ -13,58 +13,62 @@ import { checkShowsFolder, dataFolderNames, deleteFile, getDataFolder, getFileIn
 import { template } from "./utils/menuTemplate"
 import { closeMidiInPorts } from "./utils/midi"
 import { closeAllOutputs, receiveOutput } from "./utils/output"
-import { loadScripture, loadShow, logError, receiveMain, renameShows, saveRecording, startExport, startImport } from "./utils/responses"
+import { catchErrors, loadScripture, loadShow, receiveMain, renameShows, saveRecording, startExport, startImport } from "./utils/responses"
 import { config, stores, updateDataPath, userDataPath } from "./utils/store"
 import checkForUpdates from "./utils/updater"
 import { loadingOptions, mainOptions } from "./utils/windowOptions"
+import { stopReceiversNDI } from "./ndi/ndi"
 
 // ----- STARTUP -----
 
 // check if app's in production or not
 export const isProd: boolean = process.env.NODE_ENV === "production" || !/[\\/]electron/.exec(process.execPath)
 
+// get os platform
+export const isWindows: boolean = process.platform === "win32"
+export const isMac: boolean = process.platform === "darwin"
+export const isLinux: boolean = process.platform === "linux"
+
 // check if store works
 config.set("loaded", true)
 if (!config.get("loaded")) console.error("Could not get stored data!")
 
+// info
+console.log("Starting FreeShow...")
+if (!isProd) console.log("Building app! This may take 20-90 seconds")
+if (isLinux) console.log("libva error on Linux can be ignored")
+
 // start when ready
-app.on("ready", () => {
-    if (isProd) startApp()
-    else setTimeout(startApp, 32 * 1000) // Increase on low CPU.
-})
+app.on("ready", startApp)
 
 function startApp() {
     createLoading()
-    createMain()
+    updateDataPath({ load: true })
 
+    setTimeout(createMain, 100)
+    setTimeout(initialize, 3000)
+}
+
+function initialize() {
     // midi
     // createVirtualMidi()
 
     // express
     require("./servers")
 
-    // set app title to app name on windows
-    if (process.platform === "win32") app.setAppUserModelId(app.name)
+    // set app title to app name
+    if (isWindows) app.setAppUserModelId(app.name)
 
-    if (isProd) checkForUpdates()
+    if (!isProd) return
 
-    // catch errors
-    process.on("uncaughtException", function (err) {
-        let log = {
-            time: new Date(),
-            os: process.platform || "Unknown",
-            source: "See stack",
-            type: "Uncaught Exception",
-            message: err.message,
-            stack: err.stack,
-        }
-
-        logError(log, true)
-    })
+    checkForUpdates()
+    catchErrors()
 }
 
 // get LOADED message from frontend
+let isLoaded: boolean = false
 ipcMain.once("LOADED", () => {
+    isLoaded = true
     if (config.get("maximized")) mainWindow!.maximize()
     mainWindow?.show()
     loadingWindow?.close()
@@ -76,7 +80,7 @@ ipcMain.once("LOADED", () => {
 // Custom .show file
 
 //   var data = null;
-//   if (process.platform === 'win32' && process.argv.length >= 2) {
+//   if (isWindows && process.argv.length >= 2) {
 //     var openFilePath = process.argv[1];
 //     data = fs.readFileSync(openFilePath, 'utf-8');
 //   }
@@ -127,62 +131,97 @@ function createMain() {
         height: !bounds.height || bounds.height === 600 ? screenBounds.height : bounds.height,
         x: !bounds.x ? screenBounds.x : bounds.x,
         y: !bounds.y ? screenBounds.y : bounds.y,
-        frame: !isProd || process.platform !== "win32",
-        autoHideMenuBar: isProd && process.platform === "win32",
+        frame: !isProd || !isWindows,
+        autoHideMenuBar: isProd && isWindows,
     }
 
     // create window
     mainWindow = new BrowserWindow({ ...mainOptions, ...options })
 
-    // load path
-    if (isProd) mainWindow.loadFile("public/index.html").catch(err)
-    else mainWindow.loadURL("http://localhost:3000").catch(err)
-
-    function err(err: any) {
-        console.error("Something went wrong when loading index:", JSON.stringify(err))
-        app.quit()
-    }
-
-    // listeners
-    mainWindow.on("maximize", () => config.set("maximized", true))
-    mainWindow.on("unmaximize", () => config.set("maximized", false))
-    mainWindow.on("resize", () => config.set("bounds", mainWindow!.getBounds()))
-    mainWindow.on("move", () => config.set("bounds", mainWindow!.getBounds()))
-
-    mainWindow.webContents.on("did-finish-load", () => {
-        mainWindow!.webContents.send(STARTUP, { channel: "TYPE", data: null })
-    })
-
-    mainWindow.on("close", (e) => {
-        if (dialogClose) return
-
-        e.preventDefault()
-        toApp(MAIN, { channel: "CLOSE" })
-    })
-
-    mainWindow.on("closed", exitApp)
-
+    loadWindowContent(mainWindow)
+    setMainListeners()
     setGlobalMenu()
 
     // open devtools
     if (!isProd) mainWindow.webContents.openDevTools()
 }
 
-export function exitApp() {
+export function loadWindowContent(window: BrowserWindow, isOutput: boolean = false) {
+    if (!isOutput) console.log("Loading main window content")
+    if (isProd) window.loadFile("public/index.html").catch(error)
+    else window.loadURL("http://localhost:3000").catch(error)
+
+    window.webContents.on("did-finish-load", () => {
+        window.webContents.send(STARTUP, { channel: "TYPE", data: isOutput ? "output" : null })
+        if (!isOutput) retryLoadingContent()
+    })
+
+    function error(err: any) {
+        console.error("Failed to load window:", JSON.stringify(err))
+        if (isLoaded && !isOutput) app.quit()
+    }
+}
+
+// retry loading until content has finshed building
+const retryInterval = 10
+let tries = 0
+function retryLoadingContent() {
+    if (isProd) return
+
+    setTimeout(() => {
+        if (isLoaded) return
+
+        if (tries < 1) console.log("Loading content again. App is probably not finished building yet")
+        else if (tries > 15) {
+            console.log("Could not load app content. Please check console for any errors!")
+            return app.quit()
+        } else console.log("Trying to load content again")
+        tries++
+
+        mainWindow!.webContents.reload()
+    }, retryInterval * 1000)
+}
+
+function setMainListeners() {
+    if (!mainWindow) return
+
+    mainWindow.on("maximize", () => config.set("maximized", true))
+    mainWindow.on("unmaximize", () => config.set("maximized", false))
+
+    mainWindow.on("resize", () => config.set("bounds", mainWindow?.getBounds()))
+    mainWindow.on("move", () => config.set("bounds", mainWindow?.getBounds()))
+
+    mainWindow.on("close", callClose)
+    mainWindow.on("closed", exitApp)
+}
+
+function callClose(e: any) {
+    if (dialogClose) return
+    e.preventDefault()
+
+    toApp(MAIN, { channel: "CLOSE" })
+}
+
+export async function exitApp() {
     mainWindow = null
     dialogClose = false
 
-    closeAllOutputs()
+    await closeAllOutputs()
+    stopReceiversNDI()
     closeServers()
 
     // midi
     // closeVirtualMidi()
     closeMidiInPorts()
 
-    app.quit()
+    try {
+        app.quit()
 
-    // shouldn't need to use exit!
-    app.exit()
+        // shouldn't need to use exit!
+        app.exit()
+    } catch (err) {
+        console.error("Failed closing app:", err)
+    }
 }
 
 export function closeMain() {
@@ -215,7 +254,7 @@ app.on("window-all-closed", () => {
 
 // close app completely on mac
 app.on("will-quit", () => {
-    if (process.platform === "darwin") app.exit()
+    if (isMac) app.exit()
 })
 
 app.on("web-contents-created", (_e, contents) => {
@@ -258,8 +297,8 @@ function save(data: any) {
     }
 
     // scriptures
-    if (data.scripturesCache) Object.entries(data.scripturesCache).forEach(saveScripture)
     let scripturePath = getDataFolder(data.dataPath, dataFolderNames.scriptures)
+    if (data.scripturesCache) Object.entries(data.scripturesCache).forEach(saveScripture)
     function saveScripture([id, value]: any) {
         if (!value) return
         let p: string = path.join(scripturePath, value.name + ".fsb")

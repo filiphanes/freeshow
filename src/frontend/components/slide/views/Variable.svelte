@@ -6,7 +6,7 @@
     export let item: null | Item = null
     export let style: string = ""
     export let edit: boolean = false
-    $: console.log(item)
+    export let hideText: boolean = true
 
     $: variable = $variables[id || item?.variable?.id] || {}
 
@@ -29,7 +29,7 @@
         {#if variable.type === "number"}
             {Number(variable.number || 0)}
         {:else if variable.type === "text"}
-            {variable.text || ""}
+            {variable.enabled === false && hideText ? "" : variable.text || ""}
         {/if}
     </div>
 </div>

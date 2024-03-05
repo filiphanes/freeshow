@@ -1,6 +1,6 @@
 <script lang="ts">
     import { activePopup, activeShow, overlays, playerVideos, selected, showsCache, templates } from "../../../stores"
-    import { clone } from "../../helpers/array"
+    import { clone, removeDuplicates } from "../../helpers/array"
     import { history } from "../../helpers/history"
     import Icon from "../../helpers/Icon.svelte"
     import { _show } from "../../helpers/shows"
@@ -12,9 +12,9 @@
     $: {
         list = []
         if ($selected.id === "overlay") {
-            list = [...new Set($selected.data.map((id) => $overlays[id].name))]
+            list = removeDuplicates($selected.data.map((id) => $overlays[id].name))
         } else if ($selected.id === "template") {
-            list = [...new Set($selected.data.map((id) => $templates[id].name))]
+            list = removeDuplicates($selected.data.map((id) => $templates[id].name))
         } else if (($activeShow && $selected.id === "slide") || $selected.id === "group") {
             $selected.data.forEach((a, i) => {
                 let slide = a.id ? a : _show("active").layouts("active").ref()[0][a.index]
@@ -24,9 +24,9 @@
                 list.push(name || "—")
                 if (i === 0) groupName = name
             })
-            list = [...new Set(list)]
+            list = removeDuplicates(list)
         } else if ($selected.id === "player") {
-            list = [...new Set($selected.data.map((id) => $playerVideos[id].name))]
+            list = removeDuplicates($selected.data.map((id) => $playerVideos[id].name))
         } else if ($selected.id === "chord") {
             groupName = $selected.data?.[0]?.chord?.key || ""
         }
@@ -36,15 +36,15 @@
         slide: () => {
             // TODO: history (x3)
             $selected.data.forEach((a) => {
-                let slide = a.id
+                let slideId = a.id
                 let ref = _show("active").layouts("active").ref()[0][a.index]
-                if (!slide) slide = ref.id
+                if (!slideId) slideId = ref.id
 
                 // remove global group if active
-                if ($activeShow && $showsCache[$activeShow.id].slides[slide].globalGroup)
-                    history({ id: "UPDATE", newData: { data: null, key: "slides", keys: [ref.id], subkey: "globalGroup" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key" } })
+                if ($activeShow && $showsCache[$activeShow.id].slides[slideId].globalGroup)
+                    history({ id: "UPDATE", newData: { data: null, key: "slides", keys: [slideId], subkey: "globalGroup" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key" } })
 
-                history({ id: "UPDATE", newData: { data: groupName, key: "slides", keys: [ref.id], subkey: "group" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key" } })
+                history({ id: "UPDATE", newData: { data: groupName, key: "slides", keys: [slideId], subkey: "group" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key" } })
 
                 if (!ref?.parent) return
                 // make child a parent
@@ -158,7 +158,7 @@
 {/if}
 
 <div bind:this={element}>
-    <TextInput autofocus value={groupName} {element} on:change={(e) => changeValue(e)} />
+    <TextInput autofocus value={groupName} on:change={(e) => changeValue(e)} />
 </div>
 
 <Button style="height: auto;margin-top: 10px;" on:click={rename} center dark>
