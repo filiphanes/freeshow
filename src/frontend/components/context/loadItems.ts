@@ -1,136 +1,302 @@
 import { get } from "svelte/store"
-import { activeEdit, drawerTabsData, groups, outputs, overlays, selected, sorted } from "../../stores"
-import { translate } from "../../utils/language"
+import type { Media } from "../../../types/Show"
+import { actions, actionTags, activeActionTagFilter, activeEdit, activeMediaTagFilter, activePlayerTagFilter, activeTagFilter, activeVariableTagFilter, contextData, drawerTabsData, globalTags, groups, media, mediaTags, outputs, overlays, playerTags, playerVideos, selected, shows, sorted, variables, variableTags } from "../../stores"
+import { translateText } from "../../utils/language"
 import { drawerTabs } from "../../values/tabs"
+import { actionData } from "../actions/actionData"
+import { getActionName, getActionTriggerId } from "../actions/actions"
 import { getEditItems, getEditSlide } from "../edit/scripts/itemHelpers"
-import { chordAdders, keys } from "../edit/values/chords"
+import { getSlideText } from "../edit/scripts/textStyle"
+import { chordTypes, keys } from "../edit/values/chords"
 import { clone, keysToID, sortByName } from "../helpers/array"
-import { getDynamicIds } from "../helpers/showActions"
+import { removeExtension } from "../helpers/media"
+import { getLayoutRef } from "../helpers/show"
 import { _show } from "../helpers/shows"
+import { createTagItems, getSelectedTagIds } from "../helpers/tags"
 import type { ContextMenuItem } from "./contextMenus"
 
 const loadActions = {
     enabled_drawer_tabs: (items: ContextMenuItem[]) => {
         const tabsToRemove = 2
-        let tabs = keysToID(clone(drawerTabs)).slice(tabsToRemove)
-        items = tabs.map((a: any) => {
-            let enabled = get(drawerTabsData)[a.id]?.enabled !== false
-            return { id: a.id, label: a.name, icon: a.icon, enabled }
+        const tabs = keysToID(clone(drawerTabs)).slice(tabsToRemove)
+        items = tabs.map((a) => {
+            const enabled = get(drawerTabsData)[a.id]?.enabled !== false
+            return { id: a.id, label: a.name, icon: a.icon, iconColor: "var(--secondary)", enabled }
         })
 
         return items
     },
+
+    // TAGS
+    tag_set: () => {
+        const selectedShowTags = getSelectedTagIds<{ id?: string }>(get(selected), (item) => get(shows)[item.id || ""]?.quickAccess?.tags)
+        return createTagItems(globalTags, selectedShowTags, true)
+    },
+    tag_filter: () => {
+        const sortedTags = createTagItems(globalTags, get(activeTagFilter))
+        setContextData("tags", sortedTags.length)
+        return sortedTags
+    },
+    media_tag_set: () => {
+        const selectedTags = getSelectedTagIds<{ path?: string }>(get(selected), (item) => get(media)[item.path || ""]?.tags)
+        return createTagItems(mediaTags, selectedTags, true)
+    },
+    media_tag_filter: () => {
+        const sortedTags = createTagItems(mediaTags, get(activeMediaTagFilter))
+        setContextData("media_tags", sortedTags.length)
+        return sortedTags
+    },
+    player_tag_set: () => {
+        const selectedTags = getSelectedTagIds<string | { id?: string; path?: string }>(get(selected), (item) => {
+            const itemId = typeof item === "string" ? item : item.path || item.id || ""
+            return get(playerVideos)[itemId]?.tags
+        })
+        return createTagItems(playerTags, selectedTags, true)
+    },
+    player_tag_filter: () => {
+        const sortedTags = createTagItems(playerTags, get(activePlayerTagFilter))
+        setContextData("player_tags", sortedTags.length)
+        return sortedTags
+    },
+    action_tag_set: () => {
+        const selectedTags = getSelectedTagIds<{ id?: string }>(get(selected), (item) => get(actions)[item.id || ""]?.tags)
+        return createTagItems(actionTags, selectedTags, true)
+    },
+    action_tag_filter: () => {
+        let sortedTags = createTagItems(actionTags, get(activeActionTagFilter))
+        if (get(activeActionTagFilter).length) sortedTags = sortedTags.filter((a) => typeof a === "string" || a.id !== get(drawerTabsData).functions?.activeSubmenu)
+        setContextData("action_tags", sortedTags.length)
+        return sortedTags
+    },
+    variable_tag_set: () => {
+        const selectedTags = getSelectedTagIds<{ id?: string }>(get(selected), (item) => get(variables)[item.id || ""]?.tags)
+        return createTagItems(variableTags, selectedTags, true)
+    },
+    variable_tag_filter: () => {
+        let sortedTags = createTagItems(variableTags, get(activeVariableTagFilter))
+        sortedTags = sortedTags.filter((a) => typeof a === "string" || a.id !== get(drawerTabsData).functions?.activeSubmenu)
+        setContextData("variable_tags", sortedTags.length)
+        return sortedTags
+    },
+
     sort_shows: (items: ContextMenuItem[]) => sortItems(items, "shows"),
     sort_projects: (items: ContextMenuItem[]) => sortItems(items, "projects"),
+    sort_media: (items: ContextMenuItem[]) => sortItems(items, "media"),
     slide_groups: (items: ContextMenuItem[]) => {
-        let selectedIndex = get(selected).data[0]?.index
-        let currentSlide = _show().layouts("active").ref()[0][selectedIndex]
+        const selectedIndex = get(selected).data[0]?.index
+        const ref = getLayoutRef()
+        const slideRef = ref[selectedIndex] || {}
+        const currentSlide = _show().get("slides")?.[slideRef.id]
         if (!currentSlide) return []
 
-        let currentGroup = currentSlide.data?.globalGroup || ""
-        items = Object.entries(get(groups)).map(([id, a]: any) => {
+        const currentGroup: string = currentSlide.globalGroup || ""
+        const noGroup = currentSlide.group === "." || currentGroup === "none"
+        const isParent = slideRef.type === "parent"
+
+        items = Object.entries(get(groups)).map(([id, a]) => {
+            // strange bug, where name is { "isTrusted": true }, maybe an old issue
+            // https://www.reddit.com/r/freeshowapp/comments/1j0w6mt/freeshow_keeps_on_freezing
+            if (typeof a.name !== "string") a.name = ""
             return { id, color: a.color, label: a.default ? "groups." + a.name : a.name, translate: !!a.default, enabled: id === currentGroup }
         })
 
-        return sortItemsByLabel(items)
+        if (!isParent && !items.length) return [{ label: "empty.general", disabled: true }]
+
+        const textContent = getSlideText(currentSlide).trim()
+        const hasText = textContent.length > 0
+
+        // SUGGESTIONS
+        let suggested: ContextMenuItem[] = []
+        // Verse always (if it exists)
+        let verseIndex = items.findIndex((a) => a.id === "verse")
+        // if (verseIndex !== -1) suggested.push(items.splice(verseIndex, 1)[0]) // remove from main list
+        if (verseIndex !== -1) suggested.push(items[verseIndex])
+        if (hasText) {
+            // Chorus if text
+            let chorusIndex = items.findIndex((a) => a.id === "chorus")
+            if (chorusIndex !== -1) suggested.push(items[chorusIndex])
+        }
+        if (selectedIndex === 0) {
+            // Intro if first slide
+            let introIndex = items.findIndex((a) => a.id === "intro")
+            if (introIndex !== -1) suggested.push(items[introIndex])
+        } else if (selectedIndex === ref.length - 1) {
+            // Outro if last slide
+            let outroIndex = items.findIndex((a) => a.id === "outro")
+            if (outroIndex !== -1) suggested.push(items[outroIndex])
+        } else if (!hasText) {
+            // Break if no text (and not first/last)
+            let breakIndex = items.findIndex((a) => a.id === "break")
+            if (breakIndex !== -1) suggested.push(items[breakIndex])
+        } else if (textContent.length < 20) {
+            // Tag if short text (and not first/last)
+            let tagIndex = items.findIndex((a) => a.id === "tag")
+            if (tagIndex !== -1) suggested.push(items[tagIndex])
+        } else if (selectedIndex > 4) {
+            // Bridge if after slide 4 (and none of the above)
+            let bridgeIndex = items.findIndex((a) => a.id === "bridge")
+            if (bridgeIndex !== -1) suggested.push(items[bridgeIndex])
+        }
+
+        const parentGroup = _show().get("slides")?.[slideRef?.parent?.id || ""]?.globalGroup || ""
+        if (!isParent && parentGroup) {
+            // use parent group if it's global
+            let groupIndex = items.findIndex((a) => a.id === parentGroup)
+            if (groupIndex !== -1) {
+                // move itself to start of suggested list if it exists
+                let suggestedIndex = suggested.findIndex((a) => a.id === parentGroup)
+                if (suggestedIndex !== -1) suggested.splice(suggestedIndex, 1)[0]
+                suggested.unshift(items[groupIndex])
+            }
+        }
+
+        return [...(suggested.length ? [...suggested.map((a) => ({ ...a, icon: "autofill" })), "SEPARATOR"] : []), ...sortItemsByLabel(items), ...(isParent ? ["SEPARATOR", { id: "none", label: "main.none", enabled: noGroup, style: "opacity: 0.8;" }] : [])]
     },
     actions: () => {
-        let slideRef: any = _show().layouts("active").ref()[0][get(selected).data[0]?.index]
-        let currentActions: any = slideRef?.data?.actions
+        const slideRef = getLayoutRef()?.[get(selected).data[0]?.index]
+        const currentActions = slideRef?.data?.actions
 
-        let actions: any = [
-            { id: "nextTimer", label: "preview.nextTimer", icon: "clock", enabled: Number(slideRef?.data?.nextTimer || 0) || false },
-            { id: "loop", label: "preview.to_start", icon: "restart", enabled: slideRef?.data?.end || false },
-            { id: "animate", label: "popup.animate", icon: "stars", enabled: currentActions?.animate || false },
-            { id: "startShow", label: "preview._start", icon: "showIcon", enabled: currentActions?.startShow || false },
-            { id: "trigger", label: "popup.trigger", icon: "trigger", enabled: currentActions?.trigger || false },
-            { id: "audioStream", label: "popup.audio_stream", icon: "audio_stream", enabled: currentActions?.audioStream || false },
-            { id: "nextAfterMedia", label: "actions.next_after_media", icon: "forward", enabled: currentActions?.nextAfterMedia || false },
-            { id: "startTimer", label: "actions.start_timer", icon: "timer", enabled: currentActions?.startTimer || false },
-            { id: "outputStyle", label: "actions.change_output_style", icon: "styles", enabled: currentActions?.outputStyle || false },
-            { id: "receiveMidi", label: "actions.play_on_midi", icon: "play" },
-            { id: "sendMidi", label: "actions.send_midi", icon: "music" },
-        ]
-        let clearActions: any = [
-            { id: "stopTimers", label: "actions.stop_timers", icon: "stop", enabled: currentActions?.stopTimers || false },
-            { id: "clearBackground", label: "clear.background", icon: "background", enabled: currentActions?.clearBackground || false },
-            { id: "clearOverlays", label: "clear.overlays", icon: "overlays", enabled: currentActions?.clearOverlays || false },
-            { id: "clearAudio", label: "clear.audio", icon: "audio", enabled: currentActions?.clearAudio || false },
+        const slideActions = [
+            { id: "action", label: "midi.start_action", icon: "actions", iconColor: "#d497ff" },
+            "SEPARATOR",
+            { id: "slide_shortcut", label: "actions.play_with_shortcut", icon: "play", iconColor: "#7d81ff", enabled: currentActions?.slide_shortcut || false },
+            { id: "receiveMidi", label: "actions.play_on_midi", icon: "play", iconColor: "#7d81ff", enabled: currentActions?.receiveMidi || false },
+            "SEPARATOR",
+            { id: "nextTimer", label: "preview.nextTimer", icon: "clock", iconColor: "#fca4ff", enabled: Number(slideRef?.data?.nextTimer || 0) || false },
+            { id: "loop", label: "preview.to_start", icon: "restart", iconColor: "#fca4ff", enabled: slideRef?.data?.end || false },
+            { id: "nextAfterMedia", label: "actions.next_after_media", iconColor: "#fca4ff", icon: "forward", enabled: currentActions?.nextAfterMedia || false }
         ]
 
-        return [...actions, "SEPERATOR", ...clearActions]
+        return slideActions
     },
     item_actions: () => {
-        let slide = getEditSlide()
+        const slide = getEditSlide()
         if (!slide) return []
 
-        let selectedItems: number[] = get(activeEdit).items
-        let currentItemActions: any = slide.items[selectedItems[0]].actions || {}
+        const selectedItems: number[] = get(activeEdit).items || []
+        const currentItem = slide.items?.[selectedItems[0]]
+        const currentItemActions = currentItem?.actions || {}
 
-        let itemActions: any = [
-            { id: "transition", label: "popup.transition", icon: "transition", enabled: !!currentItemActions.transition },
-            { id: "showTimer", label: "actions.show_timer", icon: "time_in", enabled: Number(currentItemActions.showTimer || 0) || false },
-            { id: "hideTimer", label: "actions.hide_timer", icon: "time_out", enabled: Number(currentItemActions.hideTimer || 0) || false },
-        ]
+        const itemActions: any[] = []
+        if (get(activeEdit).type !== "overlay") {
+            itemActions.push({ id: "clickReveal", label: "actions.click_reveal", icon: "click_action", iconColor: "#d4a3f6", enabled: !!currentItem?.clickReveal })
+            if (currentItem?.type === "text" || currentItem?.lines) itemActions.push({ id: "lineReveal", label: "actions.line_reveal", icon: "line_reveal", iconColor: "#d4a3f6", enabled: !!currentItem?.lineReveal })
+            itemActions.push("SEPARATOR")
+        }
+
+        itemActions.push(
+            ...[
+                // { id: "transition", label: "popup.transition", icon: "transition", enabled: !!currentItemActions.transition },
+                { id: "display_duration", label: "popup.display_duration", icon: "clock", iconColor: "#d497ff", enabled: Number(currentItemActions.displayDuration || 0) || false },
+                "SEPARATOR",
+                { id: "showTimer", label: "actions.show_timer", icon: "time_in", iconColor: "#cd86ff", enabled: Number(currentItemActions.showTimer || 0) || false },
+                { id: "hideTimer", label: "actions.hide_timer", icon: "time_out", iconColor: "#cd86ff", enabled: Number(currentItemActions.hideTimer || 0) || false }
+            ]
+        )
 
         return itemActions
     },
     remove_layers: () => {
-        let data: any = _show().layouts("active").ref()[0][get(selected).data[0]?.index]?.data
+        if (!Array.isArray(get(selected).data) || !get(selected).data.length) return []
+
+        const layoutSlides = getLayoutRef()
+        const layoutSlide = layoutSlides[get(selected).data[0]?.index] || {}
+
+        // text content
+        let textContent = ""
+        get(selected).data.forEach(({ index }) => {
+            textContent += getSlideText(_show().slides([layoutSlides[index]?.id]).get()?.[0])
+        })
+        setContextData("textContent", textContent)
+
+        const data = layoutSlide.data
         if (!data) return []
 
-        let showMedia: any = _show().get().media
-        let media: any[] = []
+        const showMedia: { [key: string]: Media } = _show().get()?.media || {}
+        const mediaList: (ContextMenuItem | "SEPARATOR")[] = []
 
         // get background
-        let bg = data.background
-        if (bg) {
-            media.push({
+        const bg = data.background
+        if (bg && showMedia[bg]?.name) {
+            mediaList.push({
                 id: bg,
-                label: showMedia[bg].name.indexOf(".") > -1 ? showMedia[bg].name.slice(0, showMedia[bg].name.lastIndexOf(".")) : showMedia[bg].name,
+                label: removeExtension(showMedia[bg].name!),
                 translate: false,
-                icon: "image",
+                icon: "image"
             })
         }
 
         // get overlays
-        let ol = data.overlays || []
+        const ol = data.overlays || []
         if (ol.length) {
-            if (media.length) media.push("SEPERATOR")
-            media.push(...ol.map((id: string) => ({ id, label: get(overlays)[id].name, translate: false, icon: "overlays" })).sort((a, b) => a.label.localeCompare(b.label)))
+            if (mediaList.length) mediaList.push("SEPARATOR")
+            mediaList.push(
+                ...sortByName(
+                    ol.map((id: string) => ({ id, label: get(overlays)[id]?.name, translate: false, icon: "overlays" })),
+                    "label"
+                )
+            )
         }
 
         // get audio
-        let audio = data.audio || []
+        const audio = data.audio || []
         if (audio.length) {
-            if (media.length) media.push("SEPERATOR")
-            let audioItems = audio
-                .map((id: string) => ({
-                    id,
-                    label: showMedia[id].name.indexOf(".") > -1 ? showMedia[id].name.slice(0, showMedia[id].name.lastIndexOf(".")) : showMedia[id].name,
-                    translate: false,
-                    icon: "music",
-                }))
-                .sort((a, b) => a.label.localeCompare(b.label))
-            media.push(...audioItems)
+            if (mediaList.length) mediaList.push("SEPARATOR")
+            const audioItems = sortByName(
+                audio.map((id: string) => {
+                    const name = showMedia[id]?.name || ""
+                    return {
+                        id,
+                        label: name.indexOf(".") > -1 ? name.slice(0, name.lastIndexOf(".")) : name,
+                        translate: false,
+                        icon: "music"
+                    }
+                }),
+                "label"
+            )
+            mediaList.push(...audioItems)
         }
 
         // get mics
-        let mics = data.mics || []
+        const mics = data.mics || []
         if (mics.length) {
-            if (media.length) media.push("SEPERATOR")
-            let micItems = mics
-                .map((mic: any) => ({
+            if (mediaList.length) mediaList.push("SEPARATOR")
+            const micItems = sortByName(
+                mics.map((mic) => ({
                     id: mic.id,
                     label: mic.name,
                     translate: false,
-                    icon: "microphone",
-                }))
-                .sort((a, b) => a.label.localeCompare(b.label))
-            media.push(...micItems)
+                    icon: "microphone"
+                })),
+                "label"
+            )
+            mediaList.push(...micItems)
         }
 
-        if (media.length) return media
+        // get slide actions
+        const slideActions = data.actions?.slideActions || []
+        if (slideActions.length) {
+            if (mediaList.length) mediaList.push("SEPARATOR")
+            const actionItems = sortByName(
+                slideActions.map((action) => {
+                    const triggerId = getActionTriggerId(action.triggers?.[0])
+                    const customData = actionData[triggerId] || {}
+                    const actionValue = action?.actionValues?.[triggerId] || action?.actionValues?.[action.triggers?.[0]] || {}
+                    const customName = getActionName(triggerId, actionValue) || (action.name !== translateText(customData.name) ? action.name : "")
+
+                    const label = translateText(actionData[triggerId]?.name || "") + (customName ? ` (${customName})` : "")
+                    const icon = actionData[triggerId]?.icon || "actions"
+
+                    return { id: action.id || triggerId, label, translate: false, icon, type: "action" }
+                }),
+                "label"
+            )
+            mediaList.push(...actionItems)
+        }
+
+        setContextData("layers", !!mediaList?.length)
+
+        if (mediaList.length) return mediaList
         return [{ label: "empty.general", disabled: true }]
     },
     keys: () => {
@@ -138,57 +304,64 @@ const loadActions = {
     },
     chord_list: (items: ContextMenuItem[]) => {
         keys.forEach((key) => {
-            chordAdders.forEach((adder) => {
+            chordTypes.forEach((adder) => {
                 items.push({ id: key + adder, label: key + adder, translate: false })
             })
         })
 
         return items
     },
-    bind_slide: (_items, isItem: boolean = false) => {
-        let outputList: any[] = sortByName(keysToID(get(outputs)).filter((a) => !a.isKeyOutput))
+    bind_slide: (_items, isItem = false) => {
+        const outputList: any[] = sortByName(keysToID(get(outputs)).filter((a) => !a.stageOutput))
 
-        outputList = outputList.map((a) => ({ id: a.id, label: a.name, translate: false }))
-        if (isItem) outputList.push("SEPERATOR", { id: "stage", label: "menu.stage" })
+        let contextOutputList: (ContextMenuItem | "SEPARATOR")[] = outputList.map((a) => ({ id: a.id, label: a.name, translate: false }))
+        const isOverlay = get(activeEdit).type === "overlay"
+        // overlay items does not show up in stage view anyway
+        if (isItem && !isOverlay) contextOutputList.push("SEPARATOR", { id: "stage", label: "menu.stage" })
 
         let currentBindings: string[] = []
         if (isItem) {
             // get current item bindings
-            let editItems: any[] = getEditItems(true)
+            const editItems = getEditItems(true)
             currentBindings = editItems[0]?.bindings || []
         } else {
-            let selectedIndex = get(selected).data[0]?.index
-            let currentSlide = _show().layouts("active").ref()[0]?.[selectedIndex] || {}
+            const selectedIndex = get(selected).data[0]?.index
+            const currentSlide = getLayoutRef()?.[selectedIndex] || {}
             currentBindings = currentSlide.data?.bindings || []
         }
 
-        outputList = outputList.map((a) => {
-            if (currentBindings.includes(a.id)) a.enabled = true
+        contextOutputList = contextOutputList.map((a) => {
+            if (typeof a !== "string" && currentBindings.includes(a.id!)) a.enabled = true
             return a
         })
 
-        return outputList
-    },
-    bind_item: () => loadActions.bind_slide([], true),
-    dynamic_values: () => {
-        let values: any = getDynamicIds().map((id) => ({ id, label: id, translate: false }))
-        let firstMetaIndex = values.findIndex((a) => a.id.includes("meta_"))
-        values = [...values.slice(0, firstMetaIndex), "SEPERATOR", ...values.slice(firstMetaIndex)]
+        setContextData("outputList", contextOutputList?.length > 1)
 
-        return values
+        return contextOutputList
     },
+    bind_item: () => loadActions.bind_slide([], true)
 }
 
-function sortItems(items: ContextMenuItem[], id: "projects" | "shows") {
-    let type = get(sorted)[id]?.type || "name"
+function setContextData(key: string, data: boolean | string | number) {
+    contextData.update((a) => {
+        a[key] = data
+        return a
+    })
+}
+
+function sortItems(items: ContextMenuItem[], id: "shows" | "projects" | "media") {
+    const type = get(sorted)[id]?.type || "name"
 
     items = [
         { id: "name", label: "sort.name", icon: "text", enabled: type === "name" },
+        { id: "name_des", label: "sort.name_des", icon: "text", enabled: type === "name_des" },
         { id: "created", label: "info.created", icon: "calendar", enabled: type === "created" },
+        { id: "modified", label: "info.modified", icon: "calendar", enabled: type === "modified" }
     ]
     if (id === "shows") {
-        items.push({ id: "modified", label: "info.modified", icon: "calendar", enabled: type === "modified" })
         items.push({ id: "used", label: "info.used", icon: "calendar", enabled: type === "used" })
+
+        // WIP load used metadata values...
     }
 
     return items
@@ -196,18 +369,23 @@ function sortItems(items: ContextMenuItem[], id: "projects" | "shows") {
 
 function sortItemsByLabel(items: ContextMenuItem[]) {
     return items.sort((a, b) => {
-        let aName = a.translate ? translate(a.label) : a.label
-        let bName = b.translate ? translate(b.label) : b.label
+        const aName = a.translate ? translateText(a.label) : a.label
+        const bName = b.translate ? translateText(b.label) : b.label
 
         return aName.localeCompare(bName)
     })
 }
 
-export function loadItems(id: string): [string, ContextMenuItem][] {
+export function loadItems(id: string): [string, ContextMenuItem | "SEPARATOR"][] {
     if (!loadActions[id]) return []
 
-    let items: ContextMenuItem[] = loadActions[id]([])
-    let menuItems: [string, ContextMenuItem][] = items.map((a: any) => [a === "SEPERATOR" ? a : id, a])
+    const items: (ContextMenuItem | "SEPARATOR")[] = loadActions[id]([])
+    const menuItems: [string, ContextMenuItem | "SEPARATOR"][] = items.map((a) => [a === "SEPARATOR" ? a : id, a])
 
     return menuItems
+}
+
+export function quickLoadItems(id: string) {
+    if (!loadActions[id]) return
+    loadActions[id]([])
 }

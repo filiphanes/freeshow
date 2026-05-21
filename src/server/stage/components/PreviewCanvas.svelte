@@ -1,14 +1,16 @@
 <script lang="ts">
-    import { onMount } from "svelte"
+    import { onDestroy, onMount } from "svelte"
+    import { send } from "../util/socket"
 
-    export let id: string
+    export let id: string | undefined
     export let alpha: boolean
-    export let socket: any
     export let capture: any
 
-    onMount(() => {
-        socket.emit("STAGE", { id: socket.id, channel: "REQUEST_STREAM", data: { outputId: id, alpha } })
-    })
+    // REQUEST EVERY 500ms
+    const streamInterval = setInterval(() => {
+        send("REQUEST_STREAM", { outputId: id, alpha })
+    }, 500)
+    onDestroy(() => clearInterval(streamInterval))
 
     // export let capture: any
     // export let fullscreen: any = false
@@ -29,7 +31,16 @@
         canvas.height = height * 1.2
     })
 
-    $: if (capture) updateCanvas()
+    let lastUpdate = 0
+    const frameRateLimit = 1000 / 30 // Limit to 30 FPS
+    $: if (capture) throttledUpdateCanvas()
+    function throttledUpdateCanvas() {
+        const now = Date.now()
+        if (now - lastUpdate < frameRateLimit) return
+        lastUpdate = now
+        updateCanvas()
+    }
+
     async function updateCanvas() {
         if (!canvas) return
 
@@ -39,6 +50,9 @@
 
         ctx.clearRect(0, 0, canvas.width, canvas.height)
         ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+
+        // Clean up bitmap to prevent memory leaks
+        bitmap.close()
     }
 </script>
 
@@ -52,11 +66,12 @@
         align-items: center;
         justify-content: center;
 
-        height: 100%;
         width: 100%;
+        height: 100%;
     }
 
     canvas {
+        /* width: 100%; */
         height: 100%;
         aspect-ratio: 16/9;
         background-color: black;

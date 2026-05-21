@@ -1,0 +1,57 @@
+<script lang="ts">
+    import { onDestroy } from "svelte"
+    import type { Item, Transition } from "../../../../types/Show"
+    import { shouldItemBeShown } from "../../edit/scripts/itemHelpers"
+    import { clone } from "../../helpers/array"
+    import Textbox from "../../slide/Textbox.svelte"
+    import SlideItemTransition from "../transitions/SlideItemTransition.svelte"
+
+    export let outputId: string
+    export let isClearing = false
+
+    export let id: string = ""
+    export let overlay: { items: Item[]; [key: string]: any }
+    export let mirror = false
+    export let preview = false
+    export let transition: Transition
+
+    $: transitionEnabled = !!((transition.type !== "none" && transition.duration) || transition.in || transition.out)
+
+    let currentItems: Item[] = []
+    let show = false
+
+    $: if (overlay?.items !== undefined && JSON.stringify(overlay.items) !== JSON.stringify(currentItems)) updateItems()
+
+    // WIP similar to SlideContent.svelte
+    let timeout: NodeJS.Timeout | null = null
+    function updateItems() {
+        show = false
+
+        // wait for previous items to start fading out (svelte will keep them until the transition is done!)
+        if (timeout) clearTimeout(timeout)
+        timeout = setTimeout(() => {
+            currentItems = clone(overlay.items || [])
+            show = true
+        })
+    }
+
+    const showItemRef = { outputId, type: "default" }
+    // $: videoTime = $videosTime[outputId] || 0
+    // $: if ($activeTimers || $variables || $playingAudio || $playingAudioPaths || videoTime) updateValues()
+    let conditionsUpdater = 0
+    const updaterInterval = setInterval(() => {
+        if (isClearing) return
+        if (currentItems.find((a) => a?.conditions)) conditionsUpdater++
+    }, 300)
+    onDestroy(() => clearInterval(updaterInterval))
+</script>
+
+{#key show}
+    {#each currentItems as item}
+        {#if show && shouldItemBeShown(item, currentItems, showItemRef, conditionsUpdater)}
+            <SlideItemTransition {transitionEnabled} globalTransition={transition} {item} let:customItem>
+                <Textbox item={customItem} ref={{ type: "overlay", id }} {mirror} {preview} {outputId} updateDynamicValues={!isClearing} />
+            </SlideItemTransition>
+        {/if}
+    {/each}
+{/key}

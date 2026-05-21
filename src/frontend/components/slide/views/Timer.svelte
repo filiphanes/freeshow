@@ -1,68 +1,150 @@
 <script lang="ts">
+    import { onDestroy } from "svelte"
     import type { Item } from "../../../../types/Show"
-    import { activeDrawerTab, activeTimers, drawer, drawerTabsData, timers } from "../../../stores"
+    import { activeDrawerTab, activeTimers, drawer, timers } from "../../../stores"
     import { getCurrentTimerValue } from "../../drawer/timers/timers"
+    import { setDrawerTabData } from "../../helpers/historyHelpers"
     import { getStyles } from "../../helpers/style"
     // import { blur } from "svelte/transition"
+    import type { StageItem } from "../../../../types/Stage"
     import { joinTimeBig } from "../../helpers/time"
 
-    export let item: null | Item = null
+    export let item: null | Item | StageItem = null
     // export let timer: any = item?.timer
     // export let ref: { type?: "show" | "stage" | "overlay" | "template"; showId?: string; slideId?: string; id: string }
     export let id: string
     export let today: Date
-    export let style: string = ""
-    export let edit: boolean = false
+    export let style = ""
+    export let edit = false
+    export let showMs = false
 
     $: ref = { id }
     $: timer = $timers[id] || {}
 
-    // TODO: timer stops when leaving window...
-    // TODO: update timer type (in editor)
-
-    let times: string[] = []
-    let timeValue: string = "00:00"
+    let timeValue = "00:00"
     let currentTime: number
     // $: currentTime = getCurrentTime()
-    $: timeValue = joinTimeBig(typeof currentTime === "number" ? currentTime : 0)
+    $: timeValue = joinTimeBig(typeof currentTime === "number" ? currentTime : 0, item?.timer?.showHours !== false)
 
-    $: if (timer) currentTime = getCurrentTimerValue(timer, ref, today, $activeTimers)
-    $: console.log(currentTime, $activeTimers, $timers, id, timer)
+    let ms = 0
+    // let msInterval: NodeJS.Timeout | null = null
+    // $: if (showMs && timeValue && mounted) runMs()
+    // function runMs() {
+    //     const timer = $activeTimers.find((a) => a.id === id)
+    //     if (!timer || timer.paused) {
+    //         ms = 0
+    //         return
+    //     }
+
+    //     ms = 0
+    //     if (msInterval) return
+
+    //     msInterval = setInterval(() => {
+    //         // ms = Math.min(ms + 1, 99)
+    //         ms++
+    //         if (ms > 99 && msInterval) {
+    //             ms = 0
+    //             clearInterval(msInterval)
+    //             msInterval = null
+    //         }
+    //     }, 10)
+    // }
+
+    // let mounted = false
+    // onMount(() => setTimeout(() => (mounted = true), 800))
+
+    // onDestroy(() => {
+    //     if (msInterval) clearInterval(msInterval)
+    // })
+
+    $: if (timer?.type) currentTime = getCurrentTimerValue(timer, ref, today, $activeTimers, updateDynamic)
+    else currentTime = 0
 
     $: min = Math.min(timer.start || 0, timer.end || 0)
     $: max = Math.max(timer.start || 0, timer.end || 0)
     $: percentage = Math.max(0, Math.min(100, ((currentTime - min) / (max - min)) * 100))
-    $: itemColor = getStyles(item?.style)?.color || "white"
+    $: itemColor = getStyles(item?.style)?.color || "#ffffff"
 
-    $: overflow = getTimerOverflow(currentTime)
-    $: negative = timer?.start! > timer?.end!
-    function getTimerOverflow(time) {
-        if (!timer.overflow || timer.type !== "counter") return false
-        if (!timer.overflow) return false
-        let start: number = timer.start!
-        let end: number = timer.end!
+    $: overflow = timer.overflow && getTimerOverflow(currentTime)
+    $: negative = (timer?.start || 0) > (timer?.end || 0) || currentTime < 0
 
-        if (start < end) {
-            if (time > end) return true
-            return false
+    function getTimerOverflow(time: number, offset = 0) {
+        if (currentTime < 0) return true
+        if (timer.type !== "counter") {
+            // For clock/event timers, check if remaining time is within offset
+            return time <= offset
         }
 
-        if (time < end) return true
-        return false
+        let start = timer.start || 0
+        let end = timer.end || 0
+
+        if (start < end) return time + offset > end
+        return time - offset < end
     }
 
     function openInDrawer() {
         if (!edit) return
 
-        drawerTabsData.update((a) => {
-            a.calendar.activeSubTab = "timer"
-            return a
-        })
-        activeDrawerTab.set("calendar")
+        setDrawerTabData("functions", "timer")
+        activeDrawerTab.set("functions")
 
         // open drawer if closed
         if ($drawer.height <= 40) drawer.set({ height: $drawer.stored || 300, stored: null })
     }
+
+    $: shouldWarn = !!timer.warn && getTimerOverflow(currentTime, (timer.warnOffset || 30) + 1)
+
+    // BLINKING WHEN OVERFLOWING
+
+    // don't blink if paused?
+    let blinkingInterval: NodeJS.Timeout | null = null
+    $: if (shouldWarn && !overflow && timer.warnFlash) startBlinking()
+    else stopBlinking()
+    onDestroy(stopBlinking)
+
+    const INTERVAL = 1200
+    let blinkingOff = false
+    function startBlinking() {
+        if (blinkingInterval) return
+        blinkingInterval = setInterval(() => {
+            blinkingOff = true
+            setTimeout(() => {
+                blinkingOff = false
+            }, INTERVAL * 0.2)
+        }, INTERVAL)
+    }
+
+    function stopBlinking() {
+        if (blinkingInterval) clearInterval(blinkingInterval)
+        blinkingInterval = null
+    }
+
+    $: playingTimer = $activeTimers.filter((a) => a.id === ref.id)[0]
+    $: isPaused = playingTimer?.paused
+
+    // DYNAMIC VALUES
+    $: hasDynamicValues = timer.startDynamic !== undefined || timer.endDynamic !== undefined
+
+    // only update if text contains dynamic values
+    $: if (hasDynamicValues) startInterval()
+    else stopInterval()
+    let dynamicInterval: NodeJS.Timeout | null = null
+    function startInterval() {
+        stopInterval()
+        dynamicInterval = setInterval(update, 5000)
+    }
+    function stopInterval() {
+        if (dynamicInterval) clearInterval(dynamicInterval)
+        dynamicInterval = null
+    }
+
+    let updateDynamic = 0
+    function update() {
+        if (!hasDynamicValues) return
+        updateDynamic++
+    }
+
+    onDestroy(() => stopInterval())
 </script>
 
 {#if item?.timer?.viewType === "line"}
@@ -70,29 +152,14 @@
 {:else if item?.timer?.viewType === "circle"}
     <div class="circle" class:mask={item?.timer?.circleMask} style="--percentage: {percentage};--color: {itemColor};" on:dblclick={openInDrawer} />
 {:else}
-    <div class="align" style="{style}{(item?.align || '').replaceAll('text-align', 'justify-content')}" on:dblclick={openInDrawer}>
-        <div style="display: flex;white-space: nowrap;{overflow ? 'color: ' + (timer.overflowColor || 'red') + ';' : ''}">
-            {#if overflow && negative}
-                <span>-</span>
-            {/if}
-            {#if times.length}
-                {#each times as ti, i}
-                    <div style="position: relative;display: flex;">
-                        {#each ti as t}
-                            <div>
-                                {#key t}
-                                    <span style="position: absolute;">{t}</span>
-                                    <!-- <span transition:blur={{ duration: 500 }} style="position: absolute;">{t}</span> -->
-                                {/key}
-                                <span style:opacity={0}>{t}</span>
-                            </div>
-                        {/each}
-                        <!-- style="margin: 0 10px;" -->
-                        {#if i % 2 === 0 && i < times.length}<span>:</span>{/if}
-                    </div>
-                {/each}
-            {:else}
-                {timeValue}
+    <div class="align autoFontSize" style="{style}{item?.alignX ? '' : (item?.align || 'justify-content: center;').replaceAll('text-align', 'justify-content')}" on:dblclick={openInDrawer}>
+        <div style="display: flex;white-space: nowrap;{overflow ? 'color: ' + (timer.overflowColor || '#FF4136') + ';' : shouldWarn ? 'color: ' + (timer.warnColor || '#FF8000') + ';' : ''}">
+            {#if !shouldWarn || isPaused || !blinkingOff}
+                {#if overflow && negative}
+                    <span>-</span>
+                {/if}
+
+                {timeValue}{#if showMs}.{ms.toString().padStart(2, "0")}{/if}
             {/if}
         </div>
     </div>
@@ -102,6 +169,8 @@
     .align {
         display: flex;
         justify-content: center;
+        /* stage align */
+        justify-content: var(--text-align);
         height: 100%;
         align-items: center;
     }
@@ -109,7 +178,7 @@
     .line {
         height: 100%;
         background-color: white;
-        transition: 0.5s width;
+        transition: 1s width linear;
     }
 
     .circle {

@@ -1,16 +1,18 @@
-import { scriptures, scripturesCache } from "./../stores"
-import type { Bible } from "../../types/Bible"
+import type { Bible, Book, Chapter, Verse } from "json-bible/lib/Bible"
 import { uid } from "uid"
-import { xml2json } from "./xml"
 import { formatToFileName } from "../components/helpers/show"
+import { scriptures, scripturesCache } from "./../stores"
+import { setActiveScripture } from "./bible"
+import { xml2json } from "./xml"
+import { confirmCustom, promptCustom } from "../utils/popup"
 
-export function convertBebliaBible(data: any[]) {
-    data.forEach((bible) => {
-        let obj: Bible = convertToBible(xml2json(bible.content))
+export async function convertBebliaBible(data: any[]) {
+    for (const bible of data) {
+        const obj = await convertToBible(xml2json(bible.content))
         if (!obj.name) obj.name = bible.name
         obj.name = formatToFileName(obj.name)
 
-        let id = uid()
+        const id = uid()
         // create folder & file
         scripturesCache.update((a) => {
             a[id] = obj
@@ -21,38 +23,67 @@ export function convertBebliaBible(data: any[]) {
             a[id] = { name: obj.name, id }
             return a
         })
-    })
+
+        setActiveScripture(id)
+    }
 }
 
-function convertToBible(content: any): Bible {
-    let bible: Bible = {
+async function convertToBible(content: any) {
+    const bible: Bible = {
         name: content.bible["@name"] || content.bible["@translation"] || "",
-        copyright: content.bible["@info"] || "",
-        books: [],
+        metadata: { copyright: content.bible["@info"] || "" },
+        books: []
     }
 
     let testaments = content.bible.testament
-    if (!Array.isArray(testaments)) testaments = [testaments]
-    let books: any[] = []
-    console.log(testaments)
+    // some files might be missing <testament>
+    if (testaments === undefined) testaments = [{ book: content.bible.book }]
+    else if (!Array.isArray(testaments)) testaments = [testaments]
+    const books: Book[] = []
+
     testaments.forEach((a) => {
         books.push(...getBooks(a.book))
     })
     bible.books = books
 
+    // request manual translate
+    const booksWithNoName = bible.books.filter((a) => !a.name)
+    if (booksWithNoName.length > 0) {
+        if (await confirmCustom("Books are missing names, and are defaulting to English.<br>Would you like to translate them?")) {
+            let newBooks: Book[] = []
+
+            // prompt each book with no name
+            for (const book of booksWithNoName) {
+                if (book.name) {
+                    newBooks.push(book)
+                    continue
+                }
+
+                const defaultName = defaultBibleBookNames[book.number] || ""
+                const newName = await promptCustom(`Name book ${book.number} (${defaultName}):`)
+                newBooks.push({ ...book, name: newName || defaultName })
+            }
+
+            bible.books = newBooks
+        } else {
+            bible.books = bible.books.map((a) => ({ ...a, name: a.name || defaultBibleBookNames[a.number] || "" }))
+        }
+    }
+
     return bible
 }
 
 function getBooks(oldBooks: any[]) {
-    let books: any[] = []
+    const books: Book[] = []
 
-    // if (!Array.isArray(oldBooks)) oldBooks = [oldBooks]
-    console.log(oldBooks)
+    if (!Array.isArray(oldBooks)) oldBooks = [oldBooks]
+    // console.log("Books:", oldBooks)
     oldBooks.forEach((book) => {
-        let currentBook = {
+        if (!book) return
+        const currentBook = {
             number: book["@number"],
-            name: book["@name"] || defaultNames[book["@number"]],
-            chapters: getChapters(book.chapter),
+            name: book["@name"] || "",
+            chapters: getChapters(book.chapter)
         }
 
         books.push(currentBook)
@@ -62,14 +93,14 @@ function getBooks(oldBooks: any[]) {
 }
 
 function getChapters(oldChapters: any[]) {
-    let chapters: any[] = []
+    const chapters: Chapter[] = []
 
     if (!Array.isArray(oldChapters)) oldChapters = [oldChapters]
-    console.log(oldChapters)
+    // console.log("Chapters:", oldChapters)
     oldChapters.forEach((chapter) => {
-        let currentChapter = {
+        const currentChapter = {
             number: chapter["@number"],
-            verses: getVerses(chapter.verse || []),
+            verses: getVerses(chapter.verse || [])
         }
 
         chapters.push(currentChapter)
@@ -79,22 +110,23 @@ function getChapters(oldChapters: any[]) {
 }
 
 function getVerses(oldVerses: any[]) {
-    let verses: any[] = []
+    const verses: Verse[] = []
 
-    console.log(oldVerses)
+    if (!Array.isArray(oldVerses)) oldVerses = [oldVerses]
+    // console.log("Verses:", oldVerses)
     oldVerses.forEach((verse) => {
-        let currentVerse = {
+        const currentVerse = {
             number: verse["@number"],
-            value: verse["#text"],
+            text: verse["#text"] || ""
         }
 
         verses.push(currentVerse)
     })
 
-    return verses
+    return verses.filter((a) => a.text.trim() !== "")
 }
 
-const defaultNames: any = {
+export const defaultBibleBookNames: any = {
     1: "Genesis",
     2: "Exodus",
     3: "Leviticus",
@@ -161,5 +193,5 @@ const defaultNames: any = {
     63: "2 John",
     64: "3 John",
     65: "Jude",
-    66: "Revelation",
+    66: "Revelation"
 }

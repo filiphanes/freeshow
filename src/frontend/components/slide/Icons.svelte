@@ -1,57 +1,128 @@
 <script lang="ts">
-    import { OUTPUT } from "../../../types/Channels"
-    import { activeTimers, dictionary, outputs } from "../../stores"
-    import { send } from "../../utils/request"
-    import { getAudioDuration } from "../helpers/audio"
+    import type { Media, Slide, SlideData } from "../../../types/Show"
+    import { AudioPlayer } from "../../audio/audioPlayer"
+    import { activeShow, activeTimers, outputs, shows } from "../../stores"
+    import { newToast } from "../../utils/common"
+    import { translateText } from "../../utils/language"
+    import { getAccess } from "../../utils/profile"
+    import { videoExtensions } from "../../values/extensions"
+    import { clone } from "../helpers/array"
     import { history } from "../helpers/history"
     import Icon from "../helpers/Icon.svelte"
+    import { getExtension, getFileName, removeExtension } from "../helpers/media"
     import { _show } from "../helpers/shows"
     import { joinTime, secondsToTime } from "../helpers/time"
     import Button from "../inputs/Button.svelte"
 
-    export let timer: any
-    export let layoutSlide: any
-    export let background: any
-    export let duration: any
+    export let slide: Slide
+    export let timer: number[]
+    export let layoutSlide: SlideData
+    export let background: Media | null
+    export let backgroundCount = 0
+    export let duration: number
     export let columns: number
     export let index: number
     export let style: string
 
     $: videoDuration = duration ? joinTime(secondsToTime(duration)) : null
+    $: isVideo = background?.path ? videoExtensions.includes(getExtension(background.path)) : false
     $: muted = background?.muted !== false
+    $: looping = background?.loop !== false
 
-    $: nextTimer = (layoutSlide.nextTimer || 0) > 0 ? (layoutSlide.nextTimer > 59 ? joinTime(secondsToTime(layoutSlide.nextTimer)) : layoutSlide.nextTimer + "s") : null
+    $: nextTimer = (layoutSlide.nextTimer || 0) > 0 ? (layoutSlide.nextTimer! > 59 ? joinTime(secondsToTime(layoutSlide.nextTimer!)) : layoutSlide.nextTimer + "s") : null
     $: transition = layoutSlide?.transition || layoutSlide?.mediaTransition
 
+    $: currentShow = $shows[$activeShow?.id || ""] || {}
+
+    function hasAccess() {
+        if (currentShow.locked) {
+            newToast("show.locked")
+            return false
+        }
+
+        if (slide?.locked) {
+            newToast("output.state_locked")
+            return false
+        }
+
+        const profile = getAccess("shows")
+        const readOnly = profile.global === "read" || profile[currentShow.category || ""] === "read"
+        if (readOnly) {
+            newToast("profile.locked")
+            return false
+        }
+
+        return true
+    }
+
     function removeLayout(key: string) {
+        if (!hasAccess()) return
+
         history({ id: "SHOW_LAYOUT", newData: { key, indexes: [index] } })
     }
 
     // TODO: history
     function mute() {
-        _show("active").media([layoutSlide.background]).set({ key: "muted", value: false })
+        if (!hasAccess()) return
+
+        _show()
+            .media([layoutSlide.background || ""])
+            .set({ key: "muted", value: false })
+    }
+    function removeLoop() {
+        if (!hasAccess()) return
+
+        _show()
+            .media([layoutSlide.background || ""])
+            .set({ key: "loop", value: false })
     }
 
     function resetTimer() {
+        if (!hasAccess()) return
+
         activeTimers.update((a) => {
             a = a.filter((_a, i) => !timer.includes(i))
             return a
         })
-        send(OUTPUT, ["ACTIVE_TIMERS"], $activeTimers)
+        // send(OUTPUT, ["ACTIVE_TIMERS"], $activeTimers)
     }
 
-    $: audio = layoutSlide.audio?.length ? _show("active").get().media[layoutSlide.audio[0]] || {} : {}
+    function removeSlideSetting(key: string) {
+        if (!slide || currentShow.locked) return
+
+        let settings = clone(slide.settings || {})
+        delete settings[key]
+        let newData = { style: settings }
+
+        history({
+            id: "slideStyle",
+            oldData: { style: slide.settings || {} },
+            newData,
+            location: { page: "show", show: $activeShow!, slide: layoutSlide.id }
+        })
+    }
+
+    $: audio = layoutSlide.audio?.length ? _show().get()?.media?.[layoutSlide.audio[0]] || {} : {}
     $: audioPath = audio.path
-    // no need for cloud when audio can be stacked
-    // $: cloudId = $driveData.mediaId
-    // $: audioPath = cloudId && cloudId !== "default" ? audio.cloud?.[cloudId] || audio.path : audio.path
+
+    $: zoom = 4 / columns
 </script>
 
-<div class="icons" style="zoom: {4 / columns};{style}">
+<div class="icons" style="zoom: {zoom};{style}">
+    {#if layoutSlide.disabled}
+        <div>
+            <div class="button">
+                <Button style="padding: 3px;" redHover title={translateText("actions.enable")} {zoom} on:click={() => removeLayout("disabled")}>
+                    <Icon id="disable" size={0.9} white />
+                </Button>
+            </div>
+        </div>
+    {/if}
+
     {#if timer.length}
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.remove?.timer} on:click={() => resetTimer()}>
+                <Button style="padding: 3px;" redHover title={translateText("remove.timer")} {zoom} on:click={() => resetTimer()}>
                     <Icon id="timer" size={0.9} white />
                 </Button>
             </div>
@@ -63,7 +134,7 @@
     {#if nextTimer}
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.remove?.nextTimer} on:click={() => removeLayout("nextTimer")}>
+                <Button style="padding: 3px;" redHover title={translateText("remove.nextTimer")} {zoom} on:click={() => removeLayout("nextTimer")}>
                     <Icon id="clock" size={0.9} white />
                 </Button>
             </div>
@@ -74,7 +145,7 @@
         <!-- WIP move this to Actions.svelte (right side) -->
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.remove?.to_start} on:click={() => removeLayout("end")}>
+                <Button style="padding: 3px;" redHover title={translateText("remove.to_start")} {zoom} on:click={() => removeLayout("end")}>
                     <Icon id="restart" size={0.9} white />
                 </Button>
             </div>
@@ -86,7 +157,8 @@
                 <Button
                     style="padding: 3px;"
                     redHover
-                    title={$dictionary.remove?.transition}
+                    title={translateText("remove.transition")}
+                    {zoom}
                     on:click={() => {
                         removeLayout("transition")
                         removeLayout("mediaTransition")
@@ -101,7 +173,7 @@
     {#if layoutSlide.bindings?.length}
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.actions?.remove_binding} on:click={() => removeLayout("bindings")}>
+                <Button style="padding: 3px;" redHover title={translateText("actions.remove_binding")} {zoom} on:click={() => removeLayout("bindings")}>
                     <Icon id="bind" size={0.9} white />
                 </Button>
             </div>
@@ -116,8 +188,8 @@
     {#if background}
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.remove?.background} on:click={() => removeLayout("background")}>
-                    <Icon id={["camera", "screen"].includes(background.type) ? background.type : background.path?.includes("http") ? "web" : "image"} size={0.9} white />
+                <Button style="padding: 3px;" redHover title={translateText("remove.background")} {zoom} on:click={() => removeLayout("background")}>
+                    <Icon id={["camera", "screen", "ndi"].includes(background.type || "") ? background.type || "" : background.path?.startsWith("http") ? "web" : "image"} size={0.9} white />
                 </Button>
             </div>
             {#if videoDuration}
@@ -125,11 +197,20 @@
             {/if}
         </div>
     {/if}
-    {#if background && muted && duration}
+    {#if background && muted && isVideo}
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.actions?.unmute} on:click={() => mute()}>
+                <Button style="padding: 3px;" redHover title={translateText("actions.unmute")} {zoom} on:click={() => mute()}>
                     <Icon id="muted" size={0.9} white />
+                </Button>
+            </div>
+        </div>
+    {/if}
+    {#if background && looping && isVideo && backgroundCount > 1}
+        <div>
+            <div class="button">
+                <Button style="padding: 3px;{layoutSlide.actions?.nextAfterMedia ? 'opacity: 0.5;' : ''}" redHover title={translateText("media._loop")} {zoom} on:click={() => removeLoop()}>
+                    <Icon id="loop" size={0.9} white />
                 </Button>
             </div>
         </div>
@@ -137,7 +218,7 @@
     {#if layoutSlide.mics?.length}
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.actions?.remove} on:click={() => removeLayout("mics")}>
+                <Button style="padding: 3px;" redHover title={translateText("actions.remove")} {zoom} on:click={() => removeLayout("mics")}>
                     <Icon id="microphone" size={0.9} white />
                 </Button>
             </div>
@@ -149,35 +230,61 @@
         </div>
     {/if}
     {#if layoutSlide.audio?.length}
-        <div>
+        <div style="max-width: 200px;overflow: hidden;">
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.remove?.audio} on:click={() => removeLayout("audio")}>
+                <Button style="padding: 3px;" redHover title={translateText("remove.audio")} {zoom} on:click={() => removeLayout("audio")}>
                     <Icon id="audio" size={0.9} white />
                 </Button>
             </div>
-            <span>
+            <span style="white-space: nowrap;text-overflow: ellipsis;" data-title={layoutSlide.audio.reduce((acc, audioId) => acc + removeExtension(getFileName(_show().get()?.media?.[audioId]?.path)) + ", ", "").slice(0, -2)}>
                 {#if layoutSlide.audio.length === 1}
-                    {#await getAudioDuration(audioPath || "")}
+                    {#await AudioPlayer.getDuration(audioPath || "")}
                         <p>00:00</p>
                     {:then duration}
                         <p>{joinTime(secondsToTime(duration))}</p>
                     {/await}
+
+                    <!-- file name -->
+                    <!-- WIP get title/artist from metadata? -->
+                    &nbsp;|&nbsp;{removeExtension(getFileName(audioPath || ""))}
                 {:else}
                     <p>{layoutSlide.audio.length}</p>
                 {/if}
             </span>
         </div>
     {/if}
+    {#if layoutSlide.effects?.length}
+        <div>
+            <div class="button">
+                <Button style="padding: 3px;" redHover title={translateText("remove.effects")} {zoom} on:click={() => removeLayout("effects")}>
+                    <Icon id="effects" size={0.9} white />
+                </Button>
+            </div>
+            {#if layoutSlide.effects.length > 1}
+                <span><p>{layoutSlide.effects.length}</p></span>
+            {/if}
+        </div>
+    {/if}
     {#if layoutSlide.overlays?.length}
         <div>
             <div class="button">
-                <Button style="padding: 3px;" redHover title={$dictionary.remove?.overlays} on:click={() => removeLayout("overlays")}>
+                <Button style="padding: 3px;" redHover title={translateText("remove.overlays")} {zoom} on:click={() => removeLayout("overlays")}>
                     <Icon id="overlays" size={0.9} white />
                 </Button>
             </div>
             {#if layoutSlide.overlays.length > 1}
                 <span><p>{layoutSlide.overlays.length}</p></span>
             {/if}
+        </div>
+    {/if}
+
+    {#if slide?.settings?.template}
+        <div>
+            <div class="button">
+                <Button style="padding: 3px;" redHover title={translateText("actions.remove")} {zoom} on:click={() => removeSlideSetting("template")}>
+                    <Icon id="templates" size={0.9} white />
+                </Button>
+            </div>
         </div>
     {/if}
 </div>

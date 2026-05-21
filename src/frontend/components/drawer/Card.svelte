@@ -1,22 +1,29 @@
 <script lang="ts">
     import type { Resolution } from "../../../types/Settings"
     import { mediaOptions, outputs, styles } from "../../stores"
+    import { triggerClickOnEnterSpace } from "../../utils/clickable"
+    import { translateText } from "../../utils/language"
+    import Icon from "../helpers/Icon.svelte"
     import { getResolution } from "../helpers/output"
     import Loader from "../main/Loader.svelte"
     import Label from "./Label.svelte"
 
-    export let loaded: boolean = true
-    export let preview: boolean = false
-    export let active: boolean = false
+    export let loaded = true
+    export let preview = false
+    export let active = false
     export let outlineColor: string | null = null
     export let label: string
-    export let title: string = ""
-    export let mediaData: string = ""
-    export let width: number = 0
+    export let count = 0
+    export let renameId = ""
+    export let title = ""
+    export let mediaData = ""
+    export let width = 0
     export let icon: null | string = null
     export let color: null | string = null
-    export let white: boolean = true
-    export let changed: boolean = false
+    export let white = true
+    export let showPlayOnHover = false
+    export let showApplyOnHover = false
+    export let checkered = false
     export let mode: "grid" | "list" | "lyrics" = "grid"
     export let resolution: Resolution = getResolution(null, { $outputs, $styles })
     $: resolution = getResolution(resolution, { $outputs, $styles })
@@ -24,22 +31,30 @@
 </script>
 
 <!-- display: table; -->
-<div class="main" style="{outlineColor ? 'outline: 2px solid ' + outlineColor + ';' : ''}flex-direction: {mode === 'grid' ? 'column' : 'row'};width: {mainWidth}%;" class:preview class:active class:changed>
-    <div class="over" style="flex-direction: {mode === 'grid' ? 'column' : 'row'};width: 100%;" on:click on:dblclick>
+<div class="main" style="{outlineColor ? 'outline: 2px solid ' + outlineColor + ';' : ''}flex-direction: {mode === 'grid' ? 'column' : 'row'};width: {mainWidth}%;" class:preview class:active>
+    <div class="over" style="flex-direction: {mode === 'grid' ? 'column' : 'row'};width: 100%;" on:mousedown on:click on:dblclick on:keydown={triggerClickOnEnterSpace} tabindex="0" role="button">
         {#if preview}
             <div class="overlay" />
         {:else}
             <div class="hover overlay" />
         {/if}
-        <div data-media={mediaData} class="card {$$props.class || ''}" style="{$$props.style || ''};aspect-ratio: {resolution.width}/{resolution.height};" on:mouseenter on:mouseleave on:mousemove>
+        <div data-title={showPlayOnHover ? translateText(active ? "clear.general" : "media.play") : ""} data-media={mediaData} class="card {$$props.class || ''}" class:checkered style="{$$props.style || ''};aspect-ratio: {resolution.width}/{resolution.height};" on:mouseenter on:mouseleave on:mousemove>
             {#if !loaded}
                 <div class="loader">
                     <Loader />
                 </div>
+            {:else if showPlayOnHover}
+                <div class="overlayIcon">
+                    <Icon id={active ? "clear" : "play"} size={2} white />
+                </div>
+            {:else if showApplyOnHover && !active}
+                <div class="overlayIcon">
+                    <Icon id="export" size={2} white />
+                </div>
             {/if}
             <slot />
         </div>
-        <Label {label} {title} {icon} {white} {color} {mode} />
+        <Label {label} {count} {renameId} {title} {icon} {white} {color} {mode} />
     </div>
 </div>
 
@@ -69,6 +84,25 @@
         left: 0;
     }
 
+    .over:hover > .card .overlayIcon {
+        opacity: 0.6;
+    }
+    .overlayIcon {
+        display: flex;
+        cursor: pointer;
+
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+
+        z-index: 1;
+        pointer-events: none;
+
+        transition: 0.3s opacity;
+        opacity: 0;
+    }
+
     .main.preview {
         outline: 2px solid var(--primary-lighter);
         outline-offset: -1px;
@@ -82,7 +116,7 @@
         position: absolute;
         top: 0;
         left: 0;
-        background-color: rgb(0 0 0 / 0.5);
+        background-color: rgb(0 0 0 / 0.3);
         height: 100%;
         width: 100%;
         z-index: 1;
@@ -94,11 +128,6 @@
         /* outline: 3px solid var(--secondary);
     outline-offset: -2px;
     outline-offset: -5px; */
-    }
-
-    .main.changed {
-        font-style: italic;
-        color: var(--secondary);
     }
 
     .main :global(video),

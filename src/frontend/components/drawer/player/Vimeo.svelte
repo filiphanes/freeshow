@@ -1,7 +1,9 @@
 <script>
     import Player from "@vimeo/player"
-    import { currentWindow, theme, themes } from "../../../stores"
+    import { createEventDispatcher } from "svelte"
     import { OUTPUT } from "../../../../types/Channels"
+    import { currentWindow, focusMode, theme, themes, volume } from "../../../stores"
+    import { send } from "../../../utils/request"
 
     export let videoData = { paused: false, muted: true, loop: false, duration: 0 }
     export let videoTime = 0
@@ -9,7 +11,6 @@
     export let outputId
     export let preview
 
-    export let title
     export let startAt = 0
 
     const options = {
@@ -17,12 +18,13 @@
         autopause: false,
         loop: videoData.loop,
         muted: videoData.muted,
-        color: $themes[$theme]?.colors?.secondary,
-        controls: false,
+        color: $themes[$theme]?.colors?.secondary || "#ffffff",
+        controls: false
         // title: false,
         // byline: false,
     }
 
+    let dispatch = createEventDispatcher()
     let iframe = null
     let player = null
     let loaded = false
@@ -37,16 +39,11 @@
         videoTime = startAt
         // WIP captions...
 
-        setTimeout(() => {
-            player.getVideoTitle().then((t) => {
-                title = t
-            })
-        }, 1000)
-
         loaded = true
 
-        videoData.paused = false
+        videoData.paused = $focusMode
         seekTo(videoTime)
+        dispatch("loaded", true)
 
         player.on("play", () => (paused = false))
         player.on("pause", () => (paused = true))
@@ -83,13 +80,13 @@
         videoData.paused = true
         seeking = true
         setTimeout(() => {
-            player.setCurrentTime(videoTime)
+            player.setCurrentTime(time)
 
             setTimeout(() => {
                 if (isPlaying) videoData.paused = false
                 seeking = false
 
-                if (outputId) window.api.send(OUTPUT, { channel: "MAIN_VIDEO", data: { id: outputId, time: videoTime } })
+                if (outputId) send(OUTPUT, ["MAIN_TIME"], { [outputId]: time })
             }, 800)
         }, 100)
     }
@@ -100,34 +97,32 @@
         videoData.paused = paused
         if (preview) player.getCurrentTime((time) => (videoTime = time.duration))
     }
+
+    // update volume based on global slider value
+    $: if (!preview && $volume !== undefined && player) updateVolume()
+    function updateVolume() {
+        player.setVolume($volume)
+    }
 </script>
 
 <div class="main" class:hide={!id}>
     {#if id}
         <!-- TODO: looping vimeo video will reload the video -->
-        <iframe
-            bind:this={iframe}
-            on:load={iframeLoaded}
-            data-vimeo-title="0"
-            data-vimeo-autopause="0"
-            data-vimeo-dnt="0"
-            allow="autopause;"
-            {id}
-            title="video"
-            src="https://player.vimeo.com/video/{id}?autopause=0&controls=0&loop={videoData.loop}"
-            width="640"
-            height="360"
-            frameborder="0"
-        />
+        <iframe bind:this={iframe} on:load={iframeLoaded} data-vimeo-title="0" data-vimeo-autopause="0" data-vimeo-dnt="0" allow="autoplay;" {id} title="video" src="https://player.vimeo.com/video/{id}?autopause=0&controls=0&loop={videoData.loop}" width="640" height="360" />
     {/if}
 </div>
 
 <style>
+    .main {
+        pointer-events: initial;
+    }
+
     .main,
     .main :global(.yt),
     .main :global(iframe) {
         height: 100%;
         width: 100%;
+        border: none;
     }
 
     .hide :global(.yt) {

@@ -1,7 +1,30 @@
 #!/bin/bash
 set -e
 
-npm install
-patch -p1 < update-to-core22.patch
+version=$(grep "\"version\"" package.json | cut -d ":" -f 2 | cut -d "\"" -f 2)
+sed -i "s/version:.*/version: ${version}/" config/building/snapcraft.yaml
+arch="$(uname -m)"
+
+if [ "$arch" = "aarch64" ]; then
+  npm run replace-electron
+  # GCC 15 on arm64 can fail compiling @discordjs/opus unless this warning is not treated as an error.
+  CFLAGS="-Wno-error=implicit-function-declaration" npm install
+else
+  npm install
+fi
 npm run build
-npm run snap
+if [ "$arch" = "aarch64" ]; then
+  npm run pack:arm64
+else
+  npm run pack
+fi
+
+chmod +x scripts/snap/*.sh
+mkdir -p snap
+mv scripts/snap/gui snap
+mv config/building/snapcraft.yaml snap
+if [ -e "dist/linux-arm64-unpacked" ]; then
+  mv dist/linux-arm64-unpacked dist/linux-unpacked
+fi
+cp scripts/snap/*.sh dist/linux-unpacked
+snapcraft --verbose pack

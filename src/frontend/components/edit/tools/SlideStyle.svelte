@@ -1,153 +1,120 @@
 <script lang="ts">
-    import { activeEdit, activeShow, outputs, showsCache, styles, templates } from "../../../stores"
+    import { activeDrawerTab, activeEdit, activePage, activeShow, showsCache, templates } from "../../../stores"
+    import { mediaExtensions } from "../../../values/extensions"
     import { clone } from "../../helpers/array"
     import { history } from "../../helpers/history"
-    import { getActiveOutputs, getResolution } from "../../helpers/output"
+    import { getLayoutRef } from "../../helpers/show"
     import { _show } from "../../helpers/shows"
-    import T from "../../helpers/T.svelte"
-    import Color from "../../inputs/Color.svelte"
-    import CombinedInput from "../../inputs/CombinedInput.svelte"
-    import Dropdown from "../../inputs/Dropdown.svelte"
-    import NumberInput from "../../inputs/NumberInput.svelte"
-    import Notes from "../../show/tools/Notes.svelte"
+    import InputRow from "../../input/InputRow.svelte"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
+    import MaterialColorInput from "../../inputs/MaterialColorInput.svelte"
+    import MaterialFilePicker from "../../inputs/MaterialFilePicker.svelte"
+    import MaterialPopupButton from "../../inputs/MaterialPopupButton.svelte"
 
-    // TODO: templates / overlays
+    $: slideId = getLayoutRef()[$activeEdit.slide || 0]?.id
+    $: editSlide = $showsCache && $activeEdit.slide !== null && slideId ? _show().slides([slideId]).get()[0] : null
 
-    $: slideId = _show("active").layouts("active").ref()[0]?.[$activeEdit.slide || 0]?.id
-    $: editSlide = $activeEdit.slide !== null && slideId ? _show("active").slides([slideId]).get()[0] : null
-    $: backgroundColor = $styles[$outputs[getActiveOutputs()[0]].style || ""]?.background
+    // $: globalGroup = _show().get("slides")[slideId]?.globalGroup || ""
+    // $: groupData = $groups[globalGroup] || {}
+    // $: groupTemplate = groupData.template
 
-    let settings: any = {}
-    showsCache.subscribe(setValues)
+    let settings: { template?: string; color?: string; backgroundImage?: string } = {}
 
-    $: if (editSlide) setValues()
+    $: if ($showsCache || editSlide) setValues()
     function setValues() {
-        let res = getResolution(editSlide?.settings?.resolution)
         settings = {
             template: editSlide?.settings?.template,
-            color: editSlide?.settings?.color || backgroundColor || "#000000",
-            resolution: {
-                width: res.width,
-                height: res.height,
-            },
+            color: editSlide?.settings?.color || "",
+            backgroundImage: editSlide?.settings?.backgroundImage || ""
         }
     }
 
     function update() {
         if (!editSlide) return
 
-        let newData: any = { style: clone(settings) }
-        if (JSON.stringify(newData.style.resolution) === JSON.stringify(getResolution())) delete newData.style.resolution
-        if (newData.style.color === backgroundColor) delete newData.style.color
+        let newData = { style: clone(settings) }
 
         history({
             id: "slideStyle",
             oldData: { style: editSlide?.settings },
             newData,
-            location: { page: "edit", show: $activeShow!, slide: slideId },
+            location: { page: "edit", show: $activeShow!, slide: slideId }
         })
     }
 
-    let note: string = ""
-    $: if ($activeEdit.slide !== null && $activeEdit.slide !== undefined) note = editSlide?.notes || ""
-
-    function edit(e: any) {
-        if (editSlide.notes === e.detail || !slideId) return
-
-        _show($activeShow!.id).slides([slideId]).set({ key: "notes", value: e.detail })
+    function editTemplate(id: string) {
+        activeDrawerTab.set("templates")
+        activeEdit.set({ type: "template", id, items: [] })
+        activePage.set("edit")
     }
 
-    let templateList: any[] = []
-    $: templateList = [
-        { id: null, name: "—" },
-        ...Object.entries($templates)
-            .map(([id, template]: any) => ({ id, name: template.name }))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-    ]
+    $: bgImage = settings.backgroundImage
+    function editBackgroundImage() {
+        activeEdit.set({ type: "media", id: bgImage, items: [] })
+        activePage.set("edit")
+    }
 </script>
 
-<div class="section">
-    <CombinedInput>
-        <p><T id="edit.background_color" /></p>
-        <Color
-            bind:value={settings.color}
+<div class="tools">
+    <div>
+        <MaterialColorInput
+            label="edit.background_color"
+            value={settings.color}
             on:input={(e) => {
                 settings.color = e.detail
                 update()
             }}
+            allowGradients
+            allowEmpty
+            noLabel
         />
-    </CombinedInput>
-    <CombinedInput>
-        <p><T id="show.slide_template" /></p>
-        <Dropdown
-            options={templateList}
-            value={$templates[settings.template || ""]?.name || "—"}
-            on:click={(e) => {
-                settings.template = e.detail.id
-                update()
-            }}
-        />
-    </CombinedInput>
 
-    <h6><T id="settings.resolution" /></h6>
-    <CombinedInput>
-        <p><T id="edit.width" /></p>
-        <NumberInput
-            value={settings.resolution.width}
-            max={100000}
-            on:change={(e) => {
-                settings.resolution.width = Number(e.detail)
-                update()
-            }}
-            buttons={false}
-        />
-    </CombinedInput>
-    <CombinedInput>
-        <p><T id="edit.height" /></p>
-        <NumberInput
-            value={settings.resolution.height}
-            max={100000}
-            on:change={(e) => {
-                settings.resolution.height = Number(e.detail)
-                update()
-            }}
-            buttons={false}
-        />
-    </CombinedInput>
+        <!-- WIP TIP about layout background image -->
+        <InputRow>
+            <MaterialFilePicker
+                label="edit.background_media"
+                value={bgImage}
+                filter={{ name: "Media files", extensions: mediaExtensions }}
+                on:change={(e) => {
+                    settings.backgroundImage = e.detail
+                    update()
+                }}
+                allowEmpty
+            />
+            {#if bgImage}
+                <MaterialButton title="titlebar.edit" icon="edit" on:click={editBackgroundImage} />
+            {/if}
+        </InputRow>
 
-    <h6><T id="tools.notes" /></h6>
-    <div class="notes">
-        <Notes value={note} on:edit={edit} />
+        <InputRow>
+            <!-- {#if groupTemplate && !settings.template}
+                <span style="display: flex;align-items: center;padding: 0 10px;font-size: 0.8em;opacity: 0.7;"><T id="settings.overrided_value" /></span>
+            {/if} -->
+            <MaterialPopupButton
+                label="show.slide_template"
+                value={settings.template}
+                name={$templates[settings.template || ""]?.name}
+                popupId="select_template"
+                icon="templates"
+                on:change={(e) => {
+                    settings.template = e.detail
+                    update()
+                }}
+                allowEmpty
+            />
+            {#if settings.template && $templates[settings.template]}
+                <MaterialButton title="titlebar.edit" icon="edit" on:click={() => editTemplate(settings.template || "")} />
+            {/if}
+        </InputRow>
     </div>
 </div>
 
 <style>
-    .section {
+    .tools {
+        padding: 8px 5px;
+
         display: flex;
         flex-direction: column;
-        margin: 10px;
-    }
-
-    h6 {
-        color: var(--text);
-        text-transform: uppercase;
-        text-align: center;
-        font-size: 0.9em;
-        margin: 20px 0;
-    }
-
-    p {
-        opacity: 0.8;
-        font-size: 0.9em;
-    }
-
-    .notes :global(div) {
-        display: block !important;
-    }
-
-    .notes :global(div.paper) {
-        position: relative;
-        display: block;
-        background: var(--primary-darker);
+        gap: 5px;
     }
 </style>

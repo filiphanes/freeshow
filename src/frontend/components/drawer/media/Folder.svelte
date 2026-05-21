@@ -1,51 +1,36 @@
 <script lang="ts">
+    import { createEventDispatcher } from "svelte"
     import Icon from "../../helpers/Icon.svelte"
     import Card from "../Card.svelte"
-    import Image from "./Image.svelte"
-    import IntersectionObserver from "./IntersectionObserver.svelte"
+    import { encodeFilePath } from "../../helpers/media"
 
-    export let rootPath: string
     export let name: string
     export let path: string
     export let mode: "grid" | "list"
+    export let previewPaths: string[] = []
+    export let folderFilesCount: { folder: number; audio: number; video: number; image: number } = { folder: 0, audio: 0, video: 0, image: 0 }
 
-    // $: if (slowLoader === index) slowLoader += 5
+    const dispatch = createEventDispatcher()
+    function openFolder() {
+        dispatch("open", path)
+    }
 
-    let files: any[] = []
-    let items: number = 0
-
-    // TODO: folder preview
-    // let videoExtensions: string[] = ["mp4", "mov"]
-    // let imageExtensions: string[] = ["png", "jpg", "jpeg"]
-    // let extensions: string[] = [...videoExtensions, ...imageExtensions]
-    // $: if (path.length) window.api.send(READ_FOLDER, path)
-    // window.api.receive(READ_FOLDER, (msg: any) => {
-    //   if (msg.path === path) {
-    //     let filtered = msg.files.filter((file: any) => extensions.includes(file.extension) || file.folder)
-    //     items = filtered.length
-    //     files = msg.files.filter((file: any) => imageExtensions.includes(file.extension)).slice(0, 4)
-    //   }
-    // })
+    const removeBrokenImg = (e: any) => (e.target.style.display = "none")
 </script>
 
-<Card on:click={() => (rootPath = path)} width={100} label="{name}{items ? { items } : ''}" icon={mode === "grid" ? "folder" : null} color={mode === "grid" ? "var(--secondary);" : ""} {mode}>
+<Card resolution={{ width: 16, height: 9 }} on:click={openFolder} width={100} title={name} label={name} count={folderFilesCount.folder + folderFilesCount.video + folderFilesCount.image} icon={mode === "grid" ? "folder" : null} color={mode === "grid" ? "var(--secondary);" : ""} {mode}>
     <div class="flex" style="width: 100%;height: 100%;">
         <div class="grid">
             {#key path}
-                {#if files.length}
-                    {#each files as file}
-                        <!-- <img loading="lazy" src={file.path} alt={file.name} /> -->
-                        <IntersectionObserver class="observer" once let:intersecting>
-                            {#if intersecting}
-                                <Image src={file.path} alt={file.name} />
-                            {/if}
-                        </IntersectionObserver>
-                    {/each}
-                    <!-- {:else if items > 0}
-        <Icon size={5} id="movie" /> -->
-                {:else}
-                    <Icon size={mode === "list" ? 2 : 3} id="folder" white={mode === "list"} />
+                {#if mode === "grid" && previewPaths.length}
+                    <div class="images">
+                        {#each previewPaths.slice(0, 4) as path}
+                            <img loading="lazy" src={encodeFilePath(path)} on:error={removeBrokenImg} />
+                        {/each}
+                    </div>
                 {/if}
+
+                <Icon size={mode === "list" ? 2 : 3} id="folder" white={mode === "list"} />
             {/key}
         </div>
     </div>
@@ -63,10 +48,34 @@
     .grid :global(.observer) {
         width: 50%;
     }
-    .grid :global(img) {
-        object-fit: contain;
-    }
     .grid :global(svg) {
         height: 100%;
+        z-index: 1;
+    }
+
+    .images {
+        position: absolute;
+        /* width: 100%;
+        height: 100%; */
+        width: 70%;
+        height: 70%;
+
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+
+        filter: saturate(0.4) opacity(0.5);
+    }
+    .images img {
+        width: calc(50% - 3px);
+        max-height: 35px;
+
+        object-fit: cover;
+        border-radius: 3px;
+
+        /* hide alt text */
+        color: transparent;
     }
 </style>

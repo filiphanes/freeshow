@@ -1,104 +1,176 @@
 <script lang="ts">
+    import type { EffectItem } from "../../../types/Effects"
     import type { TabsObj } from "../../../types/Tabs"
-    import { activeEdit } from "../../stores"
-    import { effects } from "../drawer/effects/effects"
-    import Icon from "../helpers/Icon.svelte"
-    import T from "../helpers/T.svelte"
+    import { activeEdit, activePopup, effects } from "../../stores"
     import { clone } from "../helpers/array"
-    import Button from "../inputs/Button.svelte"
+    import Icon from "../helpers/Icon.svelte"
+    import { addToPos } from "../helpers/mover"
+    import T from "../helpers/T.svelte"
+    import InputRow from "../input/InputRow.svelte"
+    import MaterialButton from "../inputs/MaterialButton.svelte"
+    import MaterialColorInput from "../inputs/MaterialColorInput.svelte"
+    import MaterialNumberInput from "../inputs/MaterialNumberInput.svelte"
     import Tabs from "../main/Tabs.svelte"
     import EditValues from "./tools/EditValues.svelte"
+    import { effectSections } from "./values/effects"
 
     let tabs: TabsObj = {
-        effect: { name: "items.effect", icon: "image" },
+        effect: { name: "items.effect", icon: "effects" },
         // filters: { name: "edit.filters", icon: "filter" },
-        // options: { name: "", icon: "options" },
+        options: { name: "edit.options", icon: "options", overflow: true }
     }
     let active: string = Object.keys(tabs)[0]
 
     // update values
     $: effectId = $activeEdit.id || ""
-    $: currentEffect = effects[effectId]
+    $: currentEffect = $effects[effectId] || {}
 
-    let edits: any = {}
-    // let filterEdits: any = clone(currentEffect.edit)
-    $: if (currentEffect) edits = clone(currentEffect?.edit)
-    $: console.log(edits)
-
-    // $: if (geteffectType(getExtension(effectId)) === "video") addVideoOptions()
-    // else edits = clone(effectEdits.effect?.edit)
-    // function addVideoOptions() {
-    //     if (!edits) return
-
-    //     edits.video = clone(videoEdit)
-    // }
-
-    // set values
-    // $: if (currenteffect) {
-    //     edits.default[1].value = currenteffect.flipped || false
-    //     edits.default[0].value = currenteffect.fit || "contain"
-    //     if (edits.video) edits.video[0].value = currenteffect.speed || "1"
-
-    //     // update filters
-    //     let filters = getFilters(currenteffect.filter)
-    //     let defaultFilters = effectFilters.effect?.edit?.default || []
-    //     filterEdits.default.forEach((filter: any) => {
-    //         let value = filters[filter.key] ?? defaultFilters.find((a) => a.key === filter.key)?.value
-    //         let index = filterEdits.default.findIndex((a: any) => a.key === filter.key)
-    //         filterEdits.default[index].value = value
-    //     })
-    // }
-
-    // function reset() {
-    //     let deleteKeys: string[] = ["flipped", "fit", "speed"]
-
-    //     // reset
-    //     if (active === "filters") deleteKeys = ["filter"]
-    //     else if (active !== "effect") return
-    //     deleteKeys.forEach((key) => removeStore("effect", { keys: [effectId, key] }))
-
-    //     // update output
-    //     let currentOutput: any = $outputs[getActiveOutputs()[0]]
-    //     let bg = currentOutput?.out?.background
-    //     if (!bg) return
-    //     deleteKeys.forEach((key) => delete bg[key])
-    //     setOutput("background", bg)
-    // }
-
-    export function valueChanged(input: any) {
+    export function valueChanged(input: any, itemIndex: number) {
         if (!effectId) return
 
-        let value: any = input.value
-        console.log(value)
-        // if (input.id === "filter") value = addFilterString(currenteffect?.filter || "", [input.key, value])
-
-        // updateStore("effect", { keys: [effectId, input.id], value })
-
-        // // update output filters
-        // let currentOutput: any = $outputs[getActiveOutputs()[0]]
-        // if (!currentOutput.out?.background || currentOutput.out?.background?.path !== effectId) return
-        // let bg = currentOutput.out.background
-        // bg[input.id] = value
-        // setOutput("background", bg)
+        effects.update((a) => {
+            a[effectId].items[itemIndex][input.id] = input.values.value
+            return a
+        })
     }
+
+    function getItemSections(item: EffectItem) {
+        if (!effectSections[item.type]) return null
+        return { default: clone(effectSections[item.type]) }
+    }
+
+    function deleteItem(index: number) {
+        // not tested:
+        let newOpenedMenus: number[] = []
+        Object.keys(openedMenus).forEach((menuIndex: string | number) => {
+            menuIndex = Number(menuIndex)
+            if (!openedMenus[menuIndex] || menuIndex === index) return
+            newOpenedMenus.push(menuIndex + (menuIndex > index ? 1 : 0))
+        })
+        openedMenus = {}
+        newOpenedMenus.forEach((index) => (openedMenus[index] = true))
+
+        effects.update((a) => {
+            a[effectId].items.splice(index, 1)
+            return a
+        })
+    }
+
+    function toggleHidden(index: number) {
+        effects.update((a) => {
+            a[effectId].items[index].hidden = !a[effectId].items[index].hidden
+            return a
+        })
+    }
+
+    let moved = false
+    function move(index: number, newIndex: number) {
+        openedMenus = {}
+
+        effects.update((a) => {
+            const item = a[effectId].items.splice(index, 1)
+            a[effectId].items = addToPos(a[effectId].items, item, newIndex)
+            return a
+        })
+
+        moved = true
+        setTimeout(() => (moved = false))
+    }
+
+    let currentItems: any[]
+    $: currentItems = currentEffect.items || []
+
+    let openedMenus: { [key: string]: boolean } = {}
 </script>
 
 <div class="main border editTools">
     <Tabs {tabs} bind:active />
+
     <div class="content">
         {#if active === "effect"}
-            <EditValues {edits} on:change={(e) => valueChanged(e.detail)} />
+            {#if currentEffect}
+                <div class="items">
+                    {#key moved}
+                        {#each currentItems as item, i}
+                            {@const editContent = getItemSections(item)}
+
+                            <InputRow arrow={!!editContent} bind:open={openedMenus[i]}>
+                                <div class="title">
+                                    <p style="width: 100%;"><T id="effect.{item.type === 'shape' ? item.shape : item.type}" /></p>
+                                </div>
+
+                                {#if i < currentItems.length - 1}
+                                    <MaterialButton class="down" icon="down" on:click={() => move(i, i + 1)} />
+                                {/if}
+                                {#if i > 0}
+                                    <MaterialButton class="up" icon="up" on:click={() => move(i, i - 1)} />
+                                {/if}
+
+                                <MaterialButton on:click={() => toggleHidden(i)}>
+                                    <Icon id={item.hidden ? "hide" : "eye"} white={!item.hidden} />
+                                </MaterialButton>
+
+                                <MaterialButton title="actions.delete" on:click={() => deleteItem(i)}>
+                                    <Icon id="delete" white />
+                                </MaterialButton>
+
+                                <svelte:fragment slot="menu">
+                                    {#if editContent}
+                                        <EditValues sections={editContent} {item} on:change={(e) => valueChanged(e.detail, i)} />
+                                    {/if}
+                                </svelte:fragment>
+                            </InputRow>
+                        {/each}
+                    {/key}
+                </div>
+            {/if}
+
+            <MaterialButton
+                variant="outlined"
+                style="width: 100%;margin-top: 8px;"
+                icon="add"
+                on:click={() => {
+                    activePopup.set("effect_items")
+                    const nextIndex = currentItems.length
+                    if (!openedMenus[nextIndex]) openedMenus[nextIndex] = true
+                }}
+            >
+                <T id="settings.add" />
+            </MaterialButton>
+
             <!-- {:else if active === "filters"}
             <EditValues edits={filterEdits} on:change={(e) => valueChanged(e.detail)} /> -->
+        {:else if active === "options"}
+            <!-- canvas settings -->
+            <div class="section">
+                <MaterialColorInput
+                    label="edit.background_color"
+                    value={currentEffect.background}
+                    on:input={(e) => {
+                        effects.update((a) => {
+                            if (!a[effectId]) return a
+                            a[effectId].background = e.detail
+                            return a
+                        })
+                    }}
+                    allowEmpty
+                    noLabel
+                />
+                <!-- allowGradients -->
+                <MaterialNumberInput
+                    label="edit.opacity"
+                    value={(currentEffect.opacity ?? 1) * 100}
+                    max={100}
+                    on:change={(e) => {
+                        effects.update((a) => {
+                            a[effectId].opacity = e.detail / 100
+                            return a
+                        })
+                    }}
+                />
+            </div>
         {/if}
     </div>
-
-    <span style="display: flex;">
-        <Button style="flex: 1;" on:click={() => console.log("reset")} dark center>
-            <Icon id="reset" right />
-            <T id={"actions.reset"} />
-        </Button>
-    </span>
 </div>
 
 <style>
@@ -113,5 +185,32 @@
         height: 100%;
         overflow-y: auto;
         overflow-x: hidden;
+
+        padding: 10px;
+    }
+
+    .items {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .items :global(button) {
+        padding: 12px;
+    }
+
+    .title {
+        display: flex;
+        align-items: center;
+        flex: 1;
+        padding: 0 10px;
+
+        background-color: var(--primary-darker);
+    }
+
+    .content :global(.tools) {
+        padding: 0;
+    }
+    .content :global(.section) {
+        border: none;
     }
 </style>

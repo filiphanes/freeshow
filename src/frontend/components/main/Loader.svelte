@@ -1,4 +1,8 @@
-<div class="loader" />
+<script lang="ts">
+    export let size = 1
+</script>
+
+<div class="loader" style="width: {40 * size}px;height: {40 * size}px;" />
 
 <style>
     .loader {

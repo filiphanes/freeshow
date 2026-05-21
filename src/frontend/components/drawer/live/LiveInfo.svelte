@@ -1,18 +1,29 @@
 <script lang="ts">
-    import { activeRecording, currentRecordingStream } from "../../../stores"
+    import { activeRecording, currentRecordingStream, drawerTabsData, special } from "../../../stores"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
     import Button from "../../inputs/Button.svelte"
-    import { stopMediaRecorder, toggleMediaRecorder } from "./recorder"
+    import MaterialTextInput from "../../inputs/MaterialTextInput.svelte"
+    import { mediaRecorderIsPaused, stopMediaRecorder, toggleMediaRecorder } from "./recorder"
+
+    $: active = $drawerTabsData.media?.openedSubSubTab?.screens || "screens"
 
     let videoElem
     $: if ($currentRecordingStream && videoElem) {
         videoElem.srcObject = $currentRecordingStream
-        paused = false
+        paused = mediaRecorderIsPaused() || false
     }
 
     let paused = false
     $: paused ? videoElem?.pause() : videoElem?.play()
+
+    function updateSpecial(key: string, value: any) {
+        special.update((a) => {
+            if (!value) delete a[key]
+            else a[key] = value
+            return a
+        })
+    }
 </script>
 
 {#if $activeRecording}
@@ -39,12 +50,16 @@
 
         <Button on:click={stopMediaRecorder} center dark>
             <Icon id="export" size={1.2} right />
-            <T id="export.export" />
+            <T id="actions.export_recording" />
         </Button>
     </div>
-{:else}
+{:else if active === "screens" || active === "windows"}
     <div class="scroll" style="padding: 10px;">
         <T id="empty.recording" />
+    </div>
+{:else if active === "ndi"}
+    <div class="scroll" style="padding: 10px;">
+        <MaterialTextInput label="inputs.group" title="settings.comma_seperated" value={$special?.ndiInputGroups || ""} placeholder="public" on:change={(e) => updateSpecial("ndiInputGroups", e.detail)} />
     </div>
 {/if}
 

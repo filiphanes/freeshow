@@ -1,44 +1,23 @@
 import { get } from "svelte/store"
 import { uid } from "uid"
+import { REMOTE } from "../../../types/Channels"
 import { ShowObj } from "../../classes/Show"
-import {
-    activeDrawerTab,
-    activeProject,
-    activeRename,
-    activeShow,
-    activeStage,
-    currentOutputSettings,
-    defaultProjectName,
-    dictionary,
-    drawerTabsData,
-    events,
-    folders,
-    groups,
-    notFound,
-    openedFolders,
-    overlays,
-    playerVideos,
-    projects,
-    projectView,
-    shows,
-    showsCache,
-    stageShows,
-    styles,
-    theme,
-    themes,
-} from "../../stores"
+import { activeDrawerTab, activeEdit, activeProject, activeRename, activeShow, activeStage, activeTagFilter, audioPlaylists, currentOutputSettings, dictionary, drawerTabsData, effects, events, focusMode, folders, globalTags, groups, notFound, openedFolders, overlays, playerVideos, profiles, projects, projectTemplates, projectView, shows, showsCache, special, stageShows, styles, theme, themes } from "../../stores"
+import { translateText } from "../../utils/language"
 import { updateThemeValues } from "../../utils/updateSettings"
+import { EMPTY_CATEGORY, EMPTY_EFFECT, EMPTY_EVENT, EMPTY_LAYOUT, EMPTY_PLAYER_VIDEO, EMPTY_PROJECT, EMPTY_PROJECT_FOLDER, EMPTY_SECTION, EMPTY_SLIDE, EMPTY_STAGE, EMPTY_TAG } from "../../values/empty"
+import { getWeekNumber } from "../drawer/calendar/calendar"
 import { audioFolders, categories, mediaFolders, outputs, overlayCategories, templateCategories, templates } from "./../../stores"
-import { clone } from "./array"
-import { EMPTY_CATEGORY, EMPTY_EVENT, EMPTY_LAYOUT, EMPTY_PLAYER_VIDEO, EMPTY_PROJECT, EMPTY_PROJECT_FOLDER, EMPTY_SECTION, EMPTY_SLIDE, EMPTY_STAGE } from "./empty"
+import { clone, keysToID, sortByName } from "./array"
+import { addToPos } from "./mover"
 import { isOutCleared } from "./output"
 import { saveTextCache } from "./setShow"
 import { checkName } from "./show"
 import { _show } from "./shows"
-import { dateToString } from "./time"
+import { addZero, getMonthName, getWeekday } from "./time"
 
 const getDefaultCategoryUpdater = (tabId: string) => ({
-    empty: EMPTY_CATEGORY,
+    empty: { ...EMPTY_CATEGORY, icon: tabId === "shows" ? "song" : null },
     select: (id: string) => {
         setDrawerTabData(tabId, id)
     },
@@ -48,7 +27,7 @@ const getDefaultCategoryUpdater = (tabId: string) => ({
         }
 
         // TODO: set overlays/templates to unlabeled??
-    },
+    }
 })
 
 export const _updaters = {
@@ -65,23 +44,37 @@ export const _updaters = {
             if (get(activeStage).id === id) {
                 activeStage.set({ id: null, items: [] })
             }
-        },
+
+            // find any stage output window linked to this stage layout
+            const outputId = Object.entries(get(outputs)).find(([_id, output]) => output.stageOutput === id)?.[0] || ""
+            if (!outputId) return
+
+            // get first stage layout
+            const stageOutput = sortByName(keysToID(get(stageShows))).filter((a) => a.id !== id)[0] || null
+            if (!stageOutput) return
+
+            // set to new stage output
+            outputs.update((a) => {
+                a[outputId].stageOutput = stageOutput.id
+                return a
+            })
+        }
     },
 
     project: {
         store: projects,
         empty: EMPTY_PROJECT,
         initialize: (data) => {
-            return replaceEmptyValues(data, { name: getProjectName(), created: Date.now() })
+            return replaceEmptyValues(data, { name: getProjectName(), created: Date.now(), modified: Date.now(), used: Date.now() })
         },
         select: (id: string, { data }: any, initializing: boolean) => {
             activeProject.set(id)
 
             // remove active show index
             if (get(activeShow) !== null) {
-                activeShow.update((as: any) => {
-                    as.index = null
-                    return as
+                activeShow.update((a) => {
+                    delete a!.index
+                    return a
                 })
             }
 
@@ -97,7 +90,8 @@ export const _updaters = {
                 return a
             })
 
-            if (!initializing) return
+            if (!initializing || data.shows?.length || !get(projectView)) return
+
             activeRename.set("project_" + id)
         },
         deselect: (id: string) => {
@@ -105,13 +99,13 @@ export const _updaters = {
                 activeProject.set(null)
                 projectView.set(true)
             }
-        },
+        }
     },
     project_folder: {
         store: folders,
         empty: EMPTY_PROJECT_FOLDER,
         initialize: (data) => {
-            return replaceEmptyValues(data, { created: Date.now() })
+            return replaceEmptyValues(data, { created: Date.now(), modified: Date.now() })
         },
         select: (id: string, { data, changed }: any, initializing: boolean) => {
             // open parent folders if closed
@@ -139,6 +133,7 @@ export const _updaters = {
             function addBackParents(items: any, type: "project" | "folder") {
                 changed[type]?.forEach((a: any) => {
                     items[a.id].parent = a.parent
+                    items[a.id].modified = Date.now()
                 })
                 return items
             }
@@ -153,35 +148,61 @@ export const _updaters = {
             }
 
             // remove projects & folders inside
-            let parentId = get(folders)[id]?.parent
+            const parentId = get(folders)[id]?.parent
             if (!parentId) return
 
-            let parents: any = { project: [], folder: [] }
+            const parents: any = { project: [], folder: [] }
             projects.update((a) => findAllParents(a, "project"))
             folders.update((a) => findAllParents(a, "folder"))
 
             return parents
 
             function findAllParents(items: any, type: "project" | "folder") {
-                let found: number = -1
+                let found = -1
                 do {
                     if (found > -1) {
-                        let key = Object.keys(items)[found]
+                        const key = Object.keys(items)[found]
                         parents[type].push({ id: key, parent: items[key].parent })
                         items[key].parent = parentId
+                        items[key].modified = Date.now()
                     }
                     found = Object.values(items).findIndex((a: any) => a.parent === id)
                 } while (found > -1)
 
                 return items
             }
+        }
+    },
+    project_template: { store: projectTemplates, empty: EMPTY_PROJECT, timestamp: true },
+    section_template: {
+        store: projectTemplates,
+        empty: EMPTY_SECTION,
+        initialize: (data) => {
+            return replaceEmptyValues(data, { id: uid(5) })
         },
+        select: (_id: string, data: any) => {
+            activeShow.set({ id: data.data.id, index: data.index, type: "section" })
+
+            // focus on section title input
+            setTimeout(() => {
+                document.getElementById("sectionTitle")?.querySelector("input")?.focus()
+            }, 10)
+        },
+        timestamp: true
+    },
+    project_show_placeholder: {
+        store: projectTemplates,
+        empty: { id: "", type: "show_placeholder", name: "—" },
+        initialize: (data) => {
+            return replaceEmptyValues(data, { id: uid(5) }) // name: translateText("formats.show")
+        },
+        timestamp: true
     },
 
-    project_key: { store: projects },
-    project_folder_key: { store: folders },
+    project_key: { store: projects, timestamp: true },
+    project_folder_key: { store: folders, timestamp: true },
 
-    project_ref: { store: projects },
+    project_ref: { store: projects, timestamp: true },
     section: {
         store: projects,
         empty: EMPTY_SECTION,
@@ -192,6 +213,11 @@ export const _updaters = {
             // let index = get(projects)[id].shows.findIndex((ref) => ref.id === data.id)
             // if (index < 0) return
 
+            // WIP set name / notes when moved while active
+            // if (get(activeShow)?.id === data.data.id)
+            // let sectionData = clone(get(projects)[get(activeProject) || ""]?.shows[data.index])
+            // ...data.data
+
             activeShow.set({ id: data.data.id, index: data.index, type: "section" })
 
             // focus on section title input
@@ -199,83 +225,96 @@ export const _updaters = {
                 document.getElementById("sectionTitle")?.querySelector("input")?.focus()
             }, 10)
         },
+        timestamp: true
     },
 
     category_shows: {
         store: categories,
         ...getDefaultCategoryUpdater("shows"),
-        select: (id: string, _data, initializing: boolean) => {
-            if (!initializing) return
+        select: (id: string, data, initializing: boolean) => {
+            if (!initializing || data.data?.name) return
+
+            setDrawerTabData("shows", id)
             activeRename.set("category_" + get(activeDrawerTab) + "_" + id)
-        },
+        }
     },
     category_overlays: {
         store: overlayCategories,
         ...getDefaultCategoryUpdater("overlays"),
         select: (id: string, _data, initializing: boolean) => {
             if (!initializing) return
+
+            setDrawerTabData("overlays", id)
             activeRename.set("category_" + get(activeDrawerTab) + "_" + id)
-        },
+        }
     },
     category_templates: {
         store: templateCategories,
         ...getDefaultCategoryUpdater("templates"),
         select: (id: string, _data, initializing: boolean) => {
             if (!initializing) return
+
+            setDrawerTabData("templates", id)
             activeRename.set("category_" + get(activeDrawerTab) + "_" + id)
-        },
+        }
     },
     category_media: { store: mediaFolders, ...getDefaultCategoryUpdater("media") },
     category_audio: { store: audioFolders, ...getDefaultCategoryUpdater("audio") },
+    audio_playlists: { store: audioPlaylists, ...getDefaultCategoryUpdater("audio"), empty: { name: "", songs: [] } },
+    audio_playlist_key: { store: audioPlaylists },
+
+    effect: {
+        store: effects,
+        empty: EMPTY_EFFECT,
+        initialize: (data, id: string) => {
+            activeRename.set("effect_" + id)
+            return data
+        }
+    },
+    effect_key: { store: effects, empty: null },
 
     overlay: {
         store: overlays,
         empty: EMPTY_SLIDE,
-        initialize: (data) => {
+        initialize: (data, id: string) => {
             // get selected category
             if (get(drawerTabsData).overlays?.activeSubTab && get(overlayCategories)[get(drawerTabsData).overlays.activeSubTab!]) {
                 data.category = get(drawerTabsData).overlays.activeSubTab
             }
 
-            // auto name
-            let newName = 1
-            while (Object.values(get(overlays)).find((a) => a.name === newName.toString())) {
-                newName++
-            }
-            data.name = newName.toString()
+            activeRename.set("overlay_" + id)
 
             return data
         },
         deselect: (id: string) => clearOverlayOutput(id),
+        timestamp: true
     },
-    overlay_items: { store: overlays, empty: [] },
-    overlay_name: { store: overlays, empty: "" },
-    overlay_color: { store: overlays, empty: null },
-    overlay_category: { store: overlays, empty: null },
+    overlay_items: { store: overlays, empty: [], timestamp: true },
+    overlay_name: { store: overlays, empty: "", timestamp: true },
+    overlay_color: { store: overlays, empty: null, timestamp: true },
+    overlay_category: { store: overlays, empty: null, timestamp: true },
+    overlay_key: { store: overlays, empty: {}, timestamp: true },
 
     template: {
         store: templates,
         empty: EMPTY_SLIDE,
-        initialize: (data) => {
+        initialize: (data, id: string) => {
             // get selected category
-            if (get(drawerTabsData).templates?.activeSubTab && get(categories)[get(drawerTabsData).templates.activeSubTab!]) {
+            if (get(drawerTabsData).templates?.activeSubTab && get(templateCategories)[get(drawerTabsData).templates.activeSubTab!]) {
                 data.category = get(drawerTabsData).templates.activeSubTab
             }
 
-            // auto name
-            let newName = 1
-            while (Object.values(get(templates)).find((a) => a.name === newName.toString())) {
-                newName++
-            }
-            data.name = newName.toString()
+            activeRename.set("template_" + id)
 
             return data
         },
+        timestamp: true
     },
-    template_items: { store: templates, empty: [] },
-    template_name: { store: templates, empty: "" },
-    template_color: { store: templates, empty: null },
-    template_category: { store: templates, empty: null },
+    template_items: { store: templates, empty: [], timestamp: true },
+    template_name: { store: templates, empty: "", timestamp: true },
+    template_color: { store: templates, empty: null, timestamp: true },
+    template_category: { store: templates, empty: null, timestamp: true },
+    template_settings: { store: templates, empty: {}, timestamp: true },
 
     player_video: { store: playerVideos, empty: EMPTY_PLAYER_VIDEO },
 
@@ -283,26 +322,26 @@ export const _updaters = {
         store: events,
         empty: EMPTY_EVENT,
         deselect: (id: string, data: any) => {
-            let event = get(events)[id]
+            const event = get(events)[id]
             if (!event) return
             if (data.data?.repeat === true && data.previousData?.repeat === false) {
                 // TODO: delete repeated...
             }
-        },
+        }
     },
 
-    stage_item_style: { store: stageShows, empty: "" },
-    stage_item_position: { store: stageShows, empty: "" },
-    stage_item_content: { store: stageShows, empty: "" },
+    stage_item_style: { store: stageShows, empty: "", timestamp: true },
+    stage_item_position: { store: stageShows, empty: "", timestamp: true },
+    stage_item_content: { store: stageShows, empty: "", timestamp: true },
 
     show: {
         store: showsCache,
-        empty: new ShowObj(),
+        empty: new ShowObj(), // this should not be used (it's not updated)
         initialize: (data: any) => {
-            let replacer: any = {}
+            const replacer: any = {}
 
             // template
-            let template = _show("active").get("settings.template") || null
+            let template = _show().get("settings.template") || null
             // TODO: set default template from settings!
             if (!template) template = get(templates).default ? "default" : null
             if (template) replacer.template = clone(template)
@@ -311,36 +350,60 @@ export const _updaters = {
             if (get(drawerTabsData).shows?.activeSubTab !== "all") replacer.category = get(drawerTabsData).shows?.activeSubTab
 
             // name
-            replacer.name = checkName(get(dictionary).main?.unnamed || "Unnamed")
+            replacer.name = checkName(translateText("main.unnamed"))
 
+            // update remote project shows data, so the new show is properly added
+            setTimeout(() => window.api.send(REMOTE, { channel: "SHOWS", data: get(shows) }))
+
+            if (!data.timestamps) data.timestamps = {}
+            data.timestamps.modified = Date.now()
             return replaceEmptyValues(data, replacer)
         },
         select: (id: string, data: any) => {
             // add to current(stored) project
-            let showRef: any = { id, type: "show" }
-            if (data.remember?.project && get(projects)[data.remember.project]) {
+            const showRef: any = { id, type: "show" }
+            if (data.remember?.project && get(projects)[data.remember.project]?.shows) {
                 projects.update((p) => {
-                    p[data.remember.project].shows.push({ id })
+                    if (data.remember.index !== undefined && p[data.remember.project].shows.length > data.remember.index) {
+                        p[data.remember.project].shows = addToPos(p[data.remember.project].shows, [{ id }], data.remember.index)
+                        showRef.index = data.remember.index
+                    } else {
+                        p[data.remember.project].shows.push({ id })
+                        showRef.index = p[data.remember.project].shows.length - 1
+                    }
+
                     return p
                 })
-                // TODO: remember index
-                showRef.index = get(projects)[data.remember.project].shows.length - 1
             }
 
             // don't open when importing lots of songs
             // if (data.open !== false)
-            activeShow.set(showRef)
+            if (!get(focusMode)) {
+                activeShow.set(showRef)
+                activeEdit.set({ type: "show", slide: 0, items: [], showId: showRef.id })
+            }
 
             // set text cache
             saveTextCache(id, data.data)
 
             // update shows list (same as showsCache, but with less data)
             shows.update((a) => {
-                a[id] = { name: data.data.name, category: data.data.category, timestamps: data.data.timestamps }
+                a[id] = { name: data.data.name, category: data.data.category, timestamps: data.data.timestamps, quickAccess: data.data.quickAccess || {} }
+                if (data.data.origin) a[id].origin = data.data.origin
                 if (data.data.private) a[id].private = true
+                if (data.data.locked) a[id].locked = true
 
                 return a
             })
+
+            // open selected drawer tab
+            const activeCategory = get(drawerTabsData).shows?.activeSubTab
+            if (activeCategory !== "all" && activeCategory !== "unlabeled") {
+                drawerTabsData.update((a) => {
+                    a.shows = { enabled: true, activeSubTab: data.data.category }
+                    return a
+                })
+            }
 
             // remove from "not found" (should not be nessesary)
             setTimeout(() => {
@@ -354,9 +417,9 @@ export const _updaters = {
             if (get(activeShow)?.id === id) activeShow.set(null)
 
             // remove from stored project
-            if (data.remember?.project) {
+            if (data.remember?.project && get(projects)[data.remember.project]?.shows) {
                 projects.update((a) => {
-                    a[data.remember.project].shows = a[data.remember.project].shows.filter((a) => a.id !== id)
+                    a[data.remember.project].shows = a[data.remember.project].shows.filter((showRef) => showRef.id !== id)
                     return a
                 })
             }
@@ -366,19 +429,25 @@ export const _updaters = {
                 delete a[id]
                 return a
             })
-        },
+        }
     },
 
     show_layout: {
         store: showsCache,
         empty: EMPTY_LAYOUT,
+        initialize: (data) => {
+            if (!data.timestamps) data.timestamps = {}
+            data.timestamps.modified = Date.now()
+            return data
+        },
         select: (id: string, { subkey }: any, initializing: boolean) => {
             _show(id).set({ key: "settings.activeLayout", value: subkey })
 
             // set active layout in project
-            if (get(activeShow)?.index !== undefined && get(activeProject) && get(projects)[get(activeProject)!].shows[get(activeShow)!.index!]) {
+            if (get(activeShow)?.index !== undefined && get(activeProject) && get(projects)[get(activeProject)!]?.shows?.[get(activeShow)!.index!]) {
                 projects.update((a) => {
                     a[get(activeProject)!].shows[get(activeShow)!.index!].layout = subkey
+                    a[get(activeProject)!].shows[get(activeShow)!.index!].layoutInfo = { name: _show(id).get("layouts")?.[subkey]?.name || "" }
                     return a
                 })
             }
@@ -389,14 +458,36 @@ export const _updaters = {
         deselect: (id: string, { subkey }: any) => {
             if (_show(id).get("settings.activeLayout") !== subkey) return
 
-            let firstLayoutId = Object.keys(get(showsCache)[id].layouts).filter((id) => id !== subkey)[0]
-            _show(id).set({ key: "settings.activeLayout", value: firstLayoutId })
-        },
+            const firstLayoutId = Object.keys(get(showsCache)[id].layouts).filter((layoutId) => layoutId !== subkey)[0]
+            if (firstLayoutId) _show(id).set({ key: "settings.activeLayout", value: firstLayoutId })
+        }
     },
 
-    show_key: { store: showsCache },
+    show_key: {
+        store: showsCache,
+        initialize: (data) => {
+            if (typeof data !== "object") return data
+
+            if (!data.timestamps) data.timestamps = {}
+            data.timestamps.modified = Date.now()
+            return data
+        }
+    },
 
     global_group: { store: groups },
+
+    tag: {
+        store: globalTags,
+        empty: EMPTY_TAG,
+        initialize: (data, id: string) => {
+            activeRename.set("tag_" + id)
+            return data
+        },
+        deselect: () => {
+            activeTagFilter.set([])
+        }
+    },
+    tag_key: { store: globalTags },
 
     settings_theme: {
         store: themes,
@@ -416,7 +507,7 @@ export const _updaters = {
                 updateThemeValues(get(themes)[id])
             }, 100)
 
-            if (!initializing) return
+            if (!initializing || data.key) return
             activeRename.set("theme_" + id)
         },
         deselect: (id: string, data: any) => {
@@ -434,31 +525,64 @@ export const _updaters = {
                 if (data.subkey) updateTransparentColors(id)
                 updateThemeValues(get(themes)[id])
             }, 100)
-        },
+        }
     },
     settings_style: {
         store: styles,
         select: (id: string, data, initializing: boolean) => {
             if (!initializing || data.key) return
             activeRename.set("style_" + id)
-        },
+        }
     },
     settings_output: {
         store: outputs,
         select: (id: string) => {
             currentOutputSettings.set(id)
         },
+        deselect: () => {
+            setTimeout(() => {
+                const allNormalOutputs = Object.keys(get(outputs)).filter((outputId) => {
+                    const output = get(outputs)[outputId]
+                    return !output.stageOutput
+                })
+
+                if (allNormalOutputs.length > 0) {
+                    // enable if no enabled
+                    const allEnabled = allNormalOutputs.filter((id) => get(outputs)[id].enabled)
+                    if (!allEnabled.length) {
+                        outputs.update((a) => {
+                            a[allNormalOutputs[0]].enabled = true
+                            return a
+                        })
+                    }
+                    return
+                }
+
+                // create output if no normal outputs (in case stage outputs are still active)
+                outputs.update((a) => {
+                    a.default = { enabled: true, active: true, name: translateText("theme.primary"), color: "#F0008C", bounds: { x: 0, y: 0, width: 1920, height: 1080 }, screen: null, style: "default", show: {} }
+                    return a
+                })
+            }, 100)
+        }
     },
+    settings_profile: {
+        store: profiles,
+        select: (id: string, data, initializing: boolean) => {
+            if (!initializing || data.key) return
+            activeRename.set("profile_" + id)
+        }
+    }
 }
 
 function updateTransparentColors(id: string) {
     themes.update((a) => {
-        Object.entries(a[id].colors).forEach(([subId, color]: any) => {
+        Object.entries(a[id]?.colors || {}).forEach(([subId, color]: any) => {
             if (!converts[subId]) return
-            let transparentColors: any[] = converts[subId]
+            const transparentColors: any[] = converts[subId]
 
             transparentColors.forEach(({ id: colorId, opacity }: any) => {
-                let rgba: string | null = makeTransparent(color, opacity)
+                const rgba = makeTransparent(color, opacity)
 
                 a[id].colors[colorId] = rgba
             })
@@ -467,26 +591,26 @@ function updateTransparentColors(id: string) {
         return a
     })
 }
-const converts: any = {
+const converts = {
     secondary: [{ id: "secondary-opacity", opacity: 0.5 }],
     text: [
         { id: "hover", opacity: 0.05 },
-        { id: "focus", opacity: 0.1 },
-    ],
+        { id: "focus", opacity: 0.1 }
+    ]
 }
-function makeTransparent(value: string, amount: number = 0.5) {
-    let rgb = hexToRgb(value)
+function makeTransparent(value: string, amount = 0.5) {
+    const rgb = hexToRgb(value)
     if (!rgb) return null
-    let newValue: string = `rgb(${rgb.r} ${rgb.g} ${rgb.b} / ${amount})`
+    const newValue = `rgb(${rgb.r} ${rgb.g} ${rgb.b} / ${amount})`
     return newValue
 }
 function hexToRgb(hex: string) {
-    let result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
     return result
         ? {
               r: parseInt(result[1], 16),
               g: parseInt(result[2], 16),
-              b: parseInt(result[3], 16),
+              b: parseInt(result[3], 16)
           }
         : null
 }
@@ -499,10 +623,80 @@ function replaceEmptyValues(object: any, replacer: any) {
     return object
 }
 
-function getProjectName() {
-    let name = ""
-    if (get(defaultProjectName) === "date") name = dateToString(Date.now())
-    console.log(name)
+function getNextWeekdayDate(currentDate: Date, targetWeekday: number): Date {
+    let daysToAdd = targetWeekday - currentDate.getDay()
+    const result = new Date(currentDate)
+
+    // return today if it's the same day
+    if (daysToAdd === 0) return result
+
+    if (daysToAdd < 0) daysToAdd += 7
+    result.setDate(result.getDate() + daysToAdd)
+    return result
+}
+
+export const projectReplacers = [
+    { id: "DD", title: translateText("calendar.day"), value: (date) => addZero(date.getDate()) },
+    { id: "MM", title: translateText("calendar.month"), value: (date) => addZero(date.getMonth() + 1) },
+    { id: "YY", title: translateText("calendar.year"), value: (date) => date.getFullYear().toString().slice(-2) },
+    { id: "YYYY", title: "Full year", value: (date) => date.getFullYear() },
+    { id: "hh", title: "Hours", value: (date) => date.getHours() },
+    { id: "mm", title: "Minutes", value: (date) => date.getMinutes() },
+    { id: "weeknum", title: "Week number", value: (date) => getWeekNumber(date) },
+    { id: "weekday", title: "Weekday", value: (date) => getWeekday(date.getDay(), get(dictionary), true) },
+    { id: "monthname", title: "Name of month", value: (date) => getMonthName(date.getMonth(), get(dictionary), true) },
+
+    { id: "D0", title: "Next Sunday", value: (date) => addZero(getNextWeekdayDate(date, 0).getDate()) },
+    { id: "D1", title: "Next Monday", value: (date) => addZero(getNextWeekdayDate(date, 1).getDate()) },
+    { id: "D2", title: "Next Tuesday", value: (date) => addZero(getNextWeekdayDate(date, 2).getDate()) },
+    { id: "D3", title: "Next Wednesday", value: (date) => addZero(getNextWeekdayDate(date, 3).getDate()) },
+    { id: "D4", title: "Next Thursday", value: (date) => addZero(getNextWeekdayDate(date, 4).getDate()) },
+    { id: "D5", title: "Next Friday", value: (date) => addZero(getNextWeekdayDate(date, 5).getDate()) },
+    { id: "D6", title: "Next Saturday", value: (date) => addZero(getNextWeekdayDate(date, 6).getDate()) },
+    { id: "D7", title: "Next Sunday", value: (date) => addZero(getNextWeekdayDate(date, 0).getDate()) }
+]
+const DEFAULT_PROJECT_NAME = "{DD}.{MM}.{YY}"
+export function getDefaultProjectName() {
+    try {
+        const locale = navigator.language
+        const formatter = new Intl.DateTimeFormat(locale)
+        const parts = formatter.formatToParts()
+
+        const format = parts.reduce((acc, part) => {
+            switch (part.type) {
+                case "day":
+                    return acc + "{DD}"
+                case "month":
+                    return acc + "{MM}"
+                case "year":
+                    return acc + "{YY}"
+                case "literal":
+                    return acc + part.value
+                default:
+                    return ""
+            }
+        }, "")
+
+        return format || DEFAULT_PROJECT_NAME
+    } catch {
+        return DEFAULT_PROJECT_NAME
+    }
+}
+export function getProjectName(updater = get(special)) {
+    let name = updater.default_project_name ?? getDefaultProjectName()
+
+    let date = new Date()
+
+    // use Dnum date if it exists
+    const dNumMatch = name.match(/{D[0-7]}/)
+    if (dNumMatch) {
+        const dNum = parseInt(dNumMatch[0].match(/\d/)?.[0] || "0")
+        date = getNextWeekdayDate(date, dNum === 7 ? 0 : dNum)
+    }
+
+    projectReplacers.forEach((a) => {
+        name = name.replaceAll(`{${a.id}}`, a.value(date))
+    })
 
     return name
 }
@@ -510,9 +704,9 @@ function getProjectName() {
 function clearOverlayOutput(slideId: string) {
     if (!isOutCleared("overlays")) {
         outputs.update((a) => {
-            Object.entries(a).forEach(([id, output]: any) => {
+            Object.entries(a).forEach(([id, output]) => {
                 if (output.out?.overlays?.includes(slideId)) {
-                    a[id].out!.overlays = a[id].out!.overlays!.filter((a) => a !== slideId)
+                    a[id].out!.overlays = a[id].out!.overlays!.filter((overlayId) => overlayId !== slideId)
                 }
             })
             return a
@@ -520,9 +714,11 @@ function clearOverlayOutput(slideId: string) {
     }
 }
 
-function setDrawerTabData(tabId, data) {
+export function setDrawerTabData(tabId, data) {
     drawerTabsData.update((a) => {
+        if (!a[tabId]) a[tabId] = { enabled: true, activeSubTab: "" }
         a[tabId].activeSubTab = data
+
         return a
     })
 }

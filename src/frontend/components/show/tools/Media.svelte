@@ -1,16 +1,23 @@
 <script lang="ts">
-    import { onDestroy } from "svelte"
-    import { MAIN, OUTPUT } from "../../../../types/Channels"
-    import { activeShow, dictionary, driveData, media, midiIn, outLocked, outputs, playingAudio, showsCache } from "../../../stores"
-    import { playMidiIn } from "../../../utils/midi"
-    import { destroy, receive, send } from "../../../utils/request"
+    import { OUTPUT } from "../../../../types/Channels"
+    import { Main } from "../../../../types/IPC/Main"
+    import type { MediaStyle } from "../../../../types/Main"
+    import type { Media, MediaType, SlideAction } from "../../../../types/Show"
+    import { requestMain } from "../../../IPC/main"
+    import { AudioMicrophone } from "../../../audio/audioMicrophone"
+    import { AudioPlayer } from "../../../audio/audioPlayer"
+    import { activePopup, activeShow, alertMessage, media, outLocked, outputs, playingAudio, showsCache, styles } from "../../../stores"
+    import { translateText } from "../../../utils/language"
+    import { getAccess } from "../../../utils/profile"
+    import { send } from "../../../utils/request"
+    import { actionData } from "../../actions/actionData"
+    import { getActionName, getActionTriggerId, runAction } from "../../actions/actions"
     import MediaLoader from "../../drawer/media/MediaLoader.svelte"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
-    import { clearAudioStreams, playAudio, startMicrophone } from "../../helpers/audio"
-    import { getExtension, getMediaStyle, getMediaType, isMediaExtension } from "../../helpers/media"
-    import { findMatchingOut, setOutput } from "../../helpers/output"
-    import { sendMidi } from "../../helpers/showActions"
+    import { clone, sortByName } from "../../helpers/array"
+    import { getExtension, getMedia, getMediaStyle, getMediaType, isMediaExtension, mediaSize } from "../../helpers/media"
+    import { findMatchingOut, getActiveOutputs, getCurrentStyle, setOutput } from "../../helpers/output"
     import { _show } from "../../helpers/shows"
     import Button from "../../inputs/Button.svelte"
     import HoverButton from "../../inputs/HoverButton.svelte"
@@ -19,163 +26,191 @@
 
     $: show = $showsCache[$activeShow!.id]
 
-    let layoutBackgrounds: any[] = []
-    let layoutAudio: any[] = []
-    let layoutMics: any[] = []
+    $: outputId = getActiveOutputs($outputs, false, true, true)[0]
+    $: outputStyle = getCurrentStyle($styles, $outputs[outputId]?.style)
+
+    let layoutBackgrounds: string[] = []
+    let layoutAudio: string[] = []
+    let layoutMics: { id: string; name: string }[] = []
+    let layoutActions: SlideAction[] = []
 
     $: {
-        if (show) {
-            layoutBackgrounds = []
-            layoutAudio = []
-            layoutMics = []
+        layoutBackgrounds = []
+        layoutAudio = []
+        layoutMics = []
+        layoutActions = []
 
-            let refs = _show("active").layouts().ref()
-            refs.forEach((slides: any) => {
-                layoutBackgrounds.push(...slides.map((a: any) => a.data.background).filter((a: any) => a !== undefined))
+        if (show) {
+            let refs = _show().layouts().ref()
+            refs.forEach((slides) => {
+                layoutBackgrounds.push(...slides.map((a) => a.data.background).filter((a) => a !== undefined))
                 layoutAudio.push(
                     ...slides
-                        .map((a: any) => a.data.audio)
-                        .filter((a: any) => a !== undefined)
+                        .map((a) => a.data.audio)
+                        .filter((a) => a !== undefined)
                         .flat()
                 )
                 layoutMics.push(
                     ...slides
-                        .map((a: any) => a.data.mics)
-                        .filter((a: any) => a !== undefined)
+                        .map((a) => a.data.mics)
+                        .filter((a) => a !== undefined)
+                        .flat()
+                )
+                layoutActions.push(
+                    ...slides
+                        .map((a) => a.data.actions?.slideActions)
+                        .filter((a) => a !== undefined)
                         .flat()
                 )
             })
         }
     }
 
-    let backgrounds: any = {}
-    let bgs: any = []
-
+    let bgs: (Media & { count: number })[] = []
     $: if (layoutBackgrounds.length) {
-        backgrounds = {}
-        bgs = []
-        layoutBackgrounds.forEach((a: any) => {
-            if (!show.media[a]) return
-            let path = show.media[a].path || show.media[a].id!
-            let cloudId = $driveData.mediaId
-            if (cloudId && cloudId !== "default") path = show.media[a].cloud?.[cloudId] || path
+        let tempBackgrounds: { [key: string]: Media & { count: number } } = {}
+        layoutBackgrounds.forEach((a) => {
+            if (!show.media?.[a]) return
 
-            const extension = getExtension(path)
-            let type = getMediaType(extension)
+            let path: string = show.media[a].path || show.media[a].id || ""
 
-            if (backgrounds[path]) backgrounds[path].count++
-            else backgrounds[path] = { id: a, ...show.media[a], path, type, count: 1 }
+            let type = (show.media[a].type || getMediaType(getExtension(path))) as MediaType
+
+            let pathId = path.slice(0, 150)
+            if (tempBackgrounds[pathId]) tempBackgrounds[pathId].count++
+            else tempBackgrounds[pathId] = { id: a, name: "—", ...show.media[a], path, type, count: 1 }
         })
-        Object.values(backgrounds).forEach((a) => bgs.push(a))
-        bgs = bgs.sort((a: any, b: any) => a.name.localeCompare(b.name))
+        bgs = sortByName(Object.values(tempBackgrounds))
     } else bgs = []
 
-    let audio: any = []
+    let audio: (Media & { count: number })[] = []
     $: if (layoutAudio.length) {
-        audio = {}
-        layoutAudio.forEach((a: any) => {
+        let tempAudio: { [key: string]: Media & { count: number } } = {}
+        layoutAudio.forEach((a) => {
+            if (!show.media?.[a]) return
+
             let path = show.media[a].path!
-            // no need for cloud when audio can be stacked
-            // let cloudId = $driveData.mediaId
-            // if (cloudId && cloudId !== "default") path = show.media[a].cloud?.[cloudId] || path
 
-            let type = "audio"
+            let type: MediaType = "audio"
 
-            if (audio[path]) audio[path].count++
-            else audio[path] = { id: a, ...show.media[a], path, type, count: 1 }
+            if (tempAudio[path]) tempAudio[path].count++
+            else tempAudio[path] = { id: a, ...show.media[a], path, type, count: 1 }
         })
 
-        audio = Object.values(audio)
+        audio = Object.values(tempAudio)
     } else audio = []
 
-    let mics: any = []
+    let mics: { id: string; name: string; count: number }[] = []
     $: if (layoutMics.length) {
-        mics = {}
-        layoutMics.forEach((a: any) => {
+        let tempMics: { [key: string]: { id: string; name: string; count: number } } = {}
+        layoutMics.forEach((a) => {
             let id = a.id
 
-            if (mics[id]) mics[id].count++
-            else mics[id] = { ...a, count: 1 }
+            if (tempMics[id]) tempMics[id].count++
+            else tempMics[id] = { ...a, count: 1 }
         })
 
-        mics = Object.values(mics)
+        mics = Object.values(tempMics)
     } else mics = []
 
     function setBG(id: string, key: string, value: boolean) {
-        showsCache.update((a: any) => {
+        if (show.locked) {
+            alertMessage.set("show.locked")
+            activePopup.set("alert")
+            return
+        }
+
+        const profile = getAccess("shows")
+        const readOnly = profile.global === "read" || profile[show.category || ""] === "read"
+        if (readOnly) {
+            alertMessage.set("profile.locked")
+            activePopup.set("alert")
+            return
+        }
+
+        showsCache.update((a) => {
             let bgs = a[$activeShow!.id].media
+            if (!bgs[id]) return a // old media
             if (value) delete bgs[id][key]
             else bgs[id][key] = value
             return a
         })
     }
 
-    let midi: any[] = []
-    $: showMidi = show?.midi || {}
-    // $activePopup !== "midi" &&
-    $: if (Object.keys(showMidi).length || Object.keys($midiIn).length) {
-        midi = []
-        Object.entries(showMidi).forEach(([id, value]: any) => {
-            midi.push({ id, ...value })
-        })
-        Object.entries($midiIn).forEach(([id, value]: any) => {
-            if (value.shows.find((a) => a.id === $activeShow!.id)) {
-                midi.push({ id, ...value, sendType: "in" })
-            }
-        })
-    } else if (!Object.keys(showMidi).length) midi = []
+    let actions: SlideAction[] = []
+    $: if (layoutActions.length) {
+        actions = []
+        layoutActions.forEach((action) => {
+            // check if another exact exists
+            if (actions.find((a) => JSON.stringify(a) === JSON.stringify(action))) return
 
-    // TODO: check if file exists!!!
+            actions.push(action)
+        })
+    } else actions = []
 
-    let simularBgs: any[] = []
-    $: if (bgs.length) send(MAIN, ["GET_SIMULAR"], { paths: bgs.map((a) => a.path) })
-    receive(MAIN, { GET_SIMULAR: (data: string[]) => (simularBgs = data.filter((a) => isMediaExtension(getExtension(a))).slice(0, 3)) }, "media_simular")
-    onDestroy(() => destroy(MAIN, "media_simular"))
+    let similarBgs: { path: string; name: string }[] = []
+    $: if (bgs.length) getSimularPaths()
+    function getSimularPaths() {
+        if (!bgs.filter((a) => !a.path?.startsWith("http") && !a.path?.startsWith("data:")).length) return
+
+        requestMain(Main.GET_SIMILAR, { paths: bgs.map((a) => a.path || "") }, (data) => {
+            similarBgs = (data || []).filter((a) => isMediaExtension(getExtension(a.path))).slice(0, 3)
+        })
+    }
+
+    let newMedia: { [key: string]: { path: string; thumbnail: string; data: MediaStyle } } = {}
+    $: if (bgs) loadBackgrounds()
+    function loadBackgrounds() {
+        bgs.forEach(async (bgMedia) => {
+            let bgPath = bgMedia.path || ""
+
+            const media = await getMedia(bgPath, mediaSize.small)
+            if (media) newMedia[bgPath] = media
+        })
+    }
 </script>
 
-<!-- TODO: transition type & duration -->
-
 <div class="main">
-    {#if bgs.length || audio.length || mics.length || midi.length}
+    {#if bgs.length || audio.length || mics.length || actions.length}
         {#if bgs.length}
             <!-- <h5><T id="tools.media" /></h5> -->
             {#each bgs as background}
+                {@const media = newMedia[background.path || ""] || {}}
+
                 <!-- TODO: cameras -->
-                {@const mediaStyle = getMediaStyle($media[background.path], { name: "" })}
+                {@const mediaStyle = getMediaStyle(media.data, outputStyle)}
+
                 <SelectElem id="media" data={{ ...background }} draggable>
-                    <div class="media_item item context #show_media" class:active={findMatchingOut(background.path, $outputs)}>
+                    <div class="media_item item context #show_media" class:active={findMatchingOut(media.path || "", $outputs)}>
                         <HoverButton
                             style="flex: 2;height: 50px;max-width: 100px;"
                             icon="play"
                             size={3}
                             on:click={() => {
                                 if (!$outLocked) {
-                                    setOutput("background", { path: background.path, loop: background.loop !== false, muted: background.muted !== false, ...mediaStyle })
-                                    if (background.type === "video") send(OUTPUT, ["UPDATE_VIDEO"], { data: { duration: 0, paused: false, muted: background.muted !== false, loop: background.loop !== false } })
+                                    let style = clone(mediaStyle)
+                                    style.fit = media.data?.fit || ""
+                                    delete style.fitOptions
+
+                                    setOutput("background", { path: media.path, type: background.type, loop: background.loop !== false, muted: background.muted !== false, ...style })
+                                    if (background.type === "video") send(OUTPUT, ["DATA"], { [outputId]: { duration: 0, paused: false, muted: background.muted !== false, loop: background.loop !== false } })
                                 }
                             }}
-                            title={$dictionary.media?.play}
                         >
-                            <!-- <div style="flex: 2;height: 50px;"> -->
-                            <MediaLoader name={background.name} path={background.path} type={background.type} {mediaStyle} />
-                            <!-- </div> -->
+                            <MediaLoader name={background.name} path={media.path} thumbnailPath={media.thumbnail} type={background.type} {mediaStyle} />
                         </HoverButton>
-                        <!-- on:click={() => activeShow.set({ id: background.path, name: background.name, type: background.type })} -->
-                        <p title={background.path}>{background.name}</p>
+
+                        <p data-title={decodeURIComponent(media.path || background.path || "")}>{background.name}</p>
+
                         {#if background.count > 1}
                             <span style="color: var(--secondary);font-weight: bold;">{background.count}</span>
                         {/if}
+
                         {#if background.type === "video"}
-                            <Button
-                                style="flex: 0;padding: 14px 5px;"
-                                center
-                                title={background.muted !== false ? $dictionary.actions?.unmute : $dictionary.actions?.mute}
-                                on:click={() => setBG(background.id, "muted", background.muted === false)}
-                                dark
-                            >
+                            <Button style="flex: 0;padding: 14px 5px;" center title={translateText(background.muted !== false ? "actions.unmute" : "actions.mute")} on:click={() => setBG(background.id || "", "muted", background.muted === false)} dark>
                                 <Icon id={background.muted !== false ? "muted" : "volume"} white={background.muted !== false} size={1.2} />
                             </Button>
-                            <Button style="flex: 0;padding: 14px 5px;" center title={$dictionary.media?._loop} on:click={() => setBG(background.id, "loop", background.loop === false)} dark>
+                            <Button style="flex: 0;padding: 14px 5px;" center title={translateText("media._loop" + (background.loop !== false ? ": settings.enabled" : ""))} on:click={() => setBG(background.id || "", "loop", background.loop === false)} dark>
                                 <Icon id="loop" white={background.loop === false} size={1.2} />
                             </Button>
                         {/if}
@@ -183,11 +218,11 @@
                 </SelectElem>
             {/each}
 
-            {#if simularBgs.length}
+            {#if similarBgs.length}
                 <h5><T id="media.recommended" /></h5>
 
-                {#each simularBgs as background}
-                    {@const mediaStyle = getMediaStyle($media[background.path], { name: "" })}
+                {#each similarBgs as background}
+                    {@const mediaStyle = getMediaStyle($media[background.path], outputStyle)}
                     {@const type = getMediaType(getExtension(background.path)) || "video"}
 
                     <SelectElem id="media" data={{ ...background, type }} draggable>
@@ -198,15 +233,14 @@
                                 size={3}
                                 on:click={() => {
                                     if (!$outLocked) {
-                                        setOutput("background", { path: background.path, loop: true, muted: true, ...mediaStyle })
-                                        if (type === "video") send(OUTPUT, ["UPDATE_VIDEO"], { data: { duration: 0, paused: false, muted: true, loop: true } })
+                                        setOutput("background", { path: background.path, type, loop: true, muted: true, ...mediaStyle })
+                                        if (type === "video") send(OUTPUT, ["DATA"], { [outputId]: { duration: 0, paused: false, muted: true, loop: true } })
                                     }
                                 }}
-                                title={$dictionary.media?.play}
                             >
                                 <MediaLoader name={background.name} path={background.path} {type} {mediaStyle} />
                             </HoverButton>
-                            <p title={background.path}>{background.name}</p>
+                            <p data-title={background.path}>{background.name}</p>
                         </div>
                     </SelectElem>
                 {/each}
@@ -216,10 +250,21 @@
         {#if audio.length}
             <h5><T id="preview.audio" /></h5>
             {#each audio as file}
+                {@const outline = !!$playingAudio[file.path || ""]}
                 <SelectElem id="audio" data={{ path: file.path, name: file.name }} draggable>
-                    <Button class="context #show_audio" on:click={() => playAudio(file)} outline={$playingAudio[file.path]} style="padding: 8px;width: 100%;" title={file.path} bold={false}>
-                        <Icon id={$playingAudio[file.path]?.paused === true ? "play" : $playingAudio[file.path]?.paused === false ? "pause" : "music"} size={1.2} right />
-                        <p style="width: 100%;text-align: left;">{file.name.slice(0, file.name.lastIndexOf("."))}</p>
+                    <Button
+                        class="context #show_audio"
+                        on:click={() => {
+                            if ($outLocked) return
+                            AudioPlayer.start(file.path || "", { name: file.name || "" })
+                        }}
+                        {outline}
+                        style="padding: 8px;width: 100%;"
+                        title={file.path}
+                        bold={false}
+                    >
+                        <Icon id={$playingAudio[file.path || ""]?.paused === true ? "play" : $playingAudio[file.path || ""]?.paused === false ? "pause" : "music"} size={1.2} right />
+                        <p style="width: 100%;text-align: start;">{file.name?.includes(".") ? file.name.slice(0, file.name.lastIndexOf(".")) : file.name}</p>
 
                         {#if file.count > 1}
                             <span style="color: var(--secondary);font-weight: bold;">{file.count}</span>
@@ -235,26 +280,9 @@
                 {@const muted = !$playingAudio[mic.id]}
 
                 <SelectElem id="microphone" data={{ id: mic.id, type: "microphone", name: mic.name }} draggable>
-                    <Button
-                        style="padding: 8px;width: 100%;"
-                        bold={false}
-                        on:click={() => {
-                            if ($outLocked) return
-
-                            if (muted) {
-                                startMicrophone(mic)
-                                return
-                            }
-
-                            playingAudio.update((a) => {
-                                delete a[mic.id]
-                                return a
-                            })
-                            clearAudioStreams(mic.id)
-                        }}
-                    >
+                    <Button style="padding: 8px;width: 100%;" bold={false} on:click={() => AudioMicrophone.start(mic.id, { name: mic.name }, { pauseIfPlaying: true })}>
                         <Icon id="microphone" white={muted} right />
-                        <p style="width: 100%;text-align: left;">{mic.name}</p>
+                        <p style="width: 100%;text-align: start;">{mic.name}</p>
 
                         {#if mic.count > 1}
                             <span style="color: var(--secondary);font-weight: bold;">{mic.count}</span>
@@ -264,13 +292,25 @@
             {/each}
         {/if}
 
-        {#if midi.length}
-            <h5><T id="popup.midi" /></h5>
-            {#each midi as midi}
-                <SelectElem id="midi" data={midi} draggable>
-                    <Button class="context #midi" on:click={() => (midi.sendType === "in" ? playMidiIn(midi) : sendMidi(midi))} style="padding: 8px;width: 100%;" title={midi.name} bold={false}>
-                        <Icon id={midi.sendType === "in" ? "play" : "music"} size={1.2} right />
-                        <p>{midi.name}</p>
+        {#if actions.length}
+            <h5><T id="tabs.actions" /></h5>
+            {#each actions as action}
+                {@const actionId = getActionTriggerId(action.triggers?.[0])}
+                {@const customData = actionData[actionId] || {}}
+                {@const actionValue = action?.actionValues?.[actionId] || action?.actionValues?.[action.triggers?.[0]] || {}}
+                {@const customName = getActionName(actionId, actionValue) || (action.name !== translateText(customData.name) ? action.name : "")}
+
+                <SelectElem id="action" data={action} draggable>
+                    <!-- class="context #action" -->
+                    <Button on:click={() => runAction(action)} style="padding: 8px;width: 100%;" title={action.name} bold={false}>
+                        <Icon id={customData.icon || "actions"} size={1.1} style="margin-inline-start: 0.5em;" right />
+                        {#key customData.name}
+                            <p>
+                                <T id={customData.name || ""} />{#if customName}:
+                                    <span style="padding: 0;opacity: 0.7;font-size: 0.8em;">{customName}</span>
+                                {/if}
+                            </p>
+                        {/key}
                     </Button>
                 </SelectElem>
             {/each}
@@ -304,7 +344,7 @@
     }
 
     .media_item {
-        padding-right: 2px;
+        padding-inline-end: 2px;
     }
 
     .media_item:hover {
@@ -318,6 +358,7 @@
     .item {
         display: flex;
         width: 100%;
+        /* don't think fit-content is necessary */
         height: fit-content;
         /* justify-content: center; */
         align-items: center;
@@ -352,7 +393,7 @@
         width: 100%;
         height: 100%;
         object-fit: cover;
-        z-index: -1;
+        z-index: 0;
         padding: 2px;
     }
     .main :global(video) {

@@ -1,47 +1,77 @@
 <script lang="ts">
+    import { onMount } from "svelte"
     import type { TabsObj } from "../../../types/Tabs"
-    import { dictionary, labelsDisabled } from "../../stores"
+    import { activePage, dictionary, labelsDisabled, openToolsTab } from "../../stores"
+    import { translateText } from "../../utils/language"
     import Icon from "../helpers/Icon.svelte"
-    import T from "../helpers/T.svelte"
-    import Button from "../inputs/Button.svelte"
+    import MaterialButton from "../inputs/MaterialButton.svelte"
 
     export let tabs: TabsObj
     export let active: string
     export let labels: boolean = $labelsDisabled ? false : true
 
-    let firstOverflowIndex: number = Object.values(tabs).findIndex((a) => a.overflow)
-    let overflowHidden: boolean = true
+    let manuallyChanged = false
+
+    $: if ($openToolsTab) openTab()
+    function openTab() {
+        if ($activePage !== "show" && manuallyChanged) return
+
+        let tabId = $openToolsTab
+        openToolsTab.set("")
+
+        if (!tabs[tabId]) return
+        active = tabId
+
+        checkOverflow()
+    }
+
+    $: firstOverflowIndex = Object.values(tabs).findIndex((a) => a.overflow)
+    export let overflowHidden = true
+
+    onMount(checkOverflow)
+
+    function checkOverflow() {
+        // show overflow if active is in overflow
+        if (active && Object.keys(tabs).find((id) => id === active && tabs[id].overflow)) {
+            overflowHidden = false
+        }
+    }
 </script>
 
-<div class="tabs">
+<div class="tabs" style={$$props.style || null}>
     {#each Object.entries(tabs) as [id, tab]}
         {#if tab.remove !== true && (!tab.overflow || !overflowHidden)}
-            <Button on:click={() => (active = id)} active={active === id} disabled={tab.disabled} title={$dictionary.tooltip?.[id]} style="padding: 0.3em 0.5em;" dark center>
-                <Icon id={tab.icon} />
+            <MaterialButton
+                style="border-bottom: 2px solid var(--primary-darker);{$$props.style || ''}"
+                on:click={() => {
+                    active = id
+                    manuallyChanged = true
+                }}
+                isActive={active === id}
+                disabled={tab.disabled}
+                title={tab.tooltip || $dictionary.tooltip?.[id] || tab.name}
+            >
+                <Icon id={tab.icon} white={active === id} />
                 {#if labels}
                     {#key tab.name}
-                        <span style="margin-left: 0.5em;">
-                            <T id={tab.name} />
-                        </span>
+                        <span>{translateText(tab.name)}</span>
                     {/key}
                 {/if}
-            </Button>
+            </MaterialButton>
         {/if}
     {/each}
 
     {#if firstOverflowIndex > -1 && overflowHidden}
-        <Button
+        <MaterialButton
             on:click={() => {
-                overflowHidden = false
                 active = Object.keys(tabs)[firstOverflowIndex]
+                setTimeout(() => (overflowHidden = false))
             }}
-            title={$dictionary.tooltip?.options}
-            style="flex: 0;padding: 0.2em;"
-            dark
-            center
+            title={translateText("tooltip.options").replace(".", "")}
+            style="flex: 0;padding: 0 1em;"
         >
             <Icon id="arrow_right" style="opacity: 0.8;" size={1.2} white />
-        </Button>
+        </MaterialButton>
     {/if}
 </div>
 
@@ -55,5 +85,8 @@
 
     .tabs :global(button) {
         flex: auto;
+
+        padding: 0.3em 0.5em;
+        border-radius: 0;
     }
 </style>

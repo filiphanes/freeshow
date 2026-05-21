@@ -1,53 +1,24 @@
-import { draw, drawSettings, drawTool } from "./../stores"
 import { get } from "svelte/store"
 import { CONTROLLER, REMOTE, STAGE } from "../../types/Channels"
 import type { ClientMessage, Clients } from "../../types/Socket"
-import { getResolution, setOutput } from "../components/helpers/output"
-import { nextSlide, previousSlide } from "../components/helpers/showActions"
-import { connections } from "../stores"
+import { API_ACTIONS } from "../components/actions/api"
+import { checkWindowCapture } from "../components/helpers/output"
+import { connections, shows } from "../stores"
+import { isMainWindow } from "./common"
+import { receiveCONTROLLER } from "./controllerTalk"
 import { receiveREMOTE } from "./remoteTalk"
 import { receiveSTAGE } from "./stageTalk"
 
-const receiveCONTROLLER = {
-    ACTION: ({ data }) => {
-        const actions = {
-            next: () => nextSlide({ key: "ArrowRight" }),
-            previous: () => previousSlide({ key: "ArrowLeft" }),
-            clear: () => {
-                // TODO: combine this, remoteTalk and ClearButtons
-                setOutput("slide", null)
-                setOutput("background", null)
-                setOutput("overlays", [])
-            },
-        }
-        if (actions[data.id]) actions[data.id]()
-    },
-    FOCUS: ({ data }) => {
-        if (!data.offset) {
-            console.log(data)
-            draw.set(null)
-            return
-        }
-        let resolution = getResolution()
-        data.offset.x *= resolution.width
-        data.offset.y *= resolution.height
-        let tool = data.tool || "focus"
-        let settings = get(drawSettings)[tool]
-        if (settings) {
-            data.offset.x -= settings.size / 2
-            data.offset.y -= settings.size / 2
-        }
-        draw.set(data.offset)
-        drawTool.set(tool)
-    },
-}
-
 export function filterObjectArray(object: any, keys: string[], filter: null | string = null) {
-    return Object.entries(object)
-        .map(([id, a]: any) => ({ id, ...keys.reduce((o, key) => ({ ...o, [key]: a[key] }), {}) }))
-        .filter((a: any) => (filter ? a[filter] : true))
+    return (
+        Object.entries(object)
+            // sometimes object value can be undefined
+            .filter(([_id, a]: any) => a)
+            .map(([id, a]: any) => ({ id, ...keys.reduce((o, key) => ({ ...o, [key]: a[key] }), {}) }))
+            .filter((a: any) => (filter ? a[filter] : true))
+    )
 }
-export function arrayToObject(array: any[], key: string = "id") {
+export function arrayToObject(array: any[], key = "id") {
     return array.reduce((o, a) => ({ ...o, [a[key]]: a }), {})
 }
 
@@ -55,39 +26,81 @@ export function arrayToObject(array: any[], key: string = "id") {
 
 // get data from client
 export function client(id: Clients, msg: ClientMessage) {
+    const msgId = msg.id || ""
     if (msg.channel === "CONNECTION") {
         connections.update((c: any) => {
             if (!c[id]) c[id] = {}
-            c[id][msg.id!] = { entered: false, ...msg.data }
+            c[id][msgId] = { entered: false, ...msg.data }
             return c
         })
-        console.log(msg.id + " connected")
+        console.info("SERVER: " + msgId + " connected")
+
+        if (id === "STAGE") checkWindowCapture()
     } else if (msg.channel === "DISCONNECT") {
         connections.update((c: any) => {
-            if (c[id]) delete c[id][msg.id!]
+            if (c[id]) delete c[id][msgId]
             return c
         })
-        console.log(msg.id + " disconnected")
+        console.info("SERVER: " + msgId + " disconnected")
     } else sendData(id, msg)
 }
 
+export function setConnectedState(type: string, connectionId: string, key = "active", value: string | boolean) {
+    connections.update((a) => {
+        if (!a[type]) a[type] = {}
+        if (!a[type][connectionId]) a[type][connectionId] = {}
+        a[type][connectionId][key] = value
+        return a
+    })
+}
+
 // send data to client
-export async function sendData(id: Clients, msg: ClientMessage, check: boolean = false) {
-    if (id === REMOTE) {
-        if (!receiveREMOTE[msg.channel]) return console.log("UNKNOWN CHANNEL:", msg.channel)
-        msg = await receiveREMOTE[msg.channel](msg)
+export async function sendData(id: Clients, msg: ClientMessage, check = false) {
+    // console.log(id, msg)
+    if (!isMainWindow()) return
+
+    let channel = msg.channel
+    if (channel.includes("API:")) {
+        msg.api = channel.split(":")[1]
+        channel = "API"
+    }
+
+    let connectionId = msg.id
+    if (!connectionId) connectionId = Object.keys(get(connections)[id] || {})[0]
+
+    if (channel === "API") {
+        if (!msg.data) msg.data = {}
+        const apiId = msg.api || ""
+        const data = await API_ACTIONS[apiId]?.(msg.data)
+
+        if (apiId === "get_thumbnail") msg.data.thumbnail = data
+        else msg.data = data
+
+        if (id === "REMOTE" && apiId === "create_show") {
+            // update remote shows data, so the new show is properly added
+            setTimeout(() => window.api.send(id, { channel: "SHOWS", data: get(shows) }))
+        }
+
+        msg.send = true
+        if (data === undefined) msg.data = null
+    } else if (id === REMOTE) {
+        if (!receiveREMOTE[channel]) return console.info("UNKNOWN CHANNEL:", channel)
+        msg = await receiveREMOTE[channel](msg)
     } else if (id === STAGE) {
-        if (!receiveSTAGE[msg.channel]) return console.log("UNKNOWN CHANNEL:", msg.channel)
-        msg = receiveSTAGE[msg.channel](msg)
+        if (!receiveSTAGE[channel]) return console.info("UNKNOWN CHANNEL:", channel)
+        msg.data = receiveSTAGE[channel](msg.data, connectionId)
+
+        if (msg.data === undefined) msg.data = null
+        if (msg.data?.channel === "ERROR") msg = { ...msg, channel: "ERROR", data: msg.data?.data }
     } else if (id === CONTROLLER) {
-        if (!receiveCONTROLLER[msg.channel]) return console.log("UNKNOWN CHANNEL:", msg.channel)
-        msg = receiveCONTROLLER[msg.channel](msg)
+        if (!receiveCONTROLLER[channel]) return console.info("UNKNOWN CHANNEL:", channel)
+        msg = receiveCONTROLLER[channel](msg)
     }
 
     // let ids: string[] = []
     // if (msg.id) ids = [msg.id]
     // else ids = Object.keys(get(connections).REMOTE || {})
-    if (msg && msg.data !== null && (!check || !checkSent(id, msg))) {
+    if (msg && (msg.data !== null || msg.send) && (!check || !checkSent(id, msg))) {
         window.api.send(id, msg)
         // ids.forEach((id) => {
         // window.api.send(id, { id, ...msg })
@@ -96,13 +109,13 @@ export async function sendData(id: Clients, msg: ClientMessage, check: boolean =
 }
 
 // limit data sent per second
-let timeouts: any = {}
-let time: number = 1000
-export function timedout(id: Clients, msg: ClientMessage, run: Function) {
-    let timeID = id + msg.id || "" + msg.channel
+const timeouts: any = {}
+const time = 1000
+export function timedout(id: Clients, msg: ClientMessage, run: () => void) {
+    const timeID = id + (msg.id || "") + msg.channel
     if (!timeouts[timeID]) {
         timeouts[timeID] = true
-        let first: string = JSON.stringify(msg.data)
+        const first: string = JSON.stringify(msg.data)
         run()
         // TODO: msg does not change!!!
         setTimeout(() => {
@@ -113,20 +126,20 @@ export function timedout(id: Clients, msg: ClientMessage, run: Function) {
 }
 
 // check previous
-var sent: any = { REMOTE: {}, STAGE: {} }
+const sent: any = { REMOTE: {}, STAGE: {} }
 function checkSent(id: Clients, msg: any): boolean {
-    let match: boolean = true
-    if (sent[id][msg.channel] !== JSON.stringify(msg.data)) {
-        sent[id][msg.channel] = JSON.stringify(msg.data)
-        match = false
+    const serialized = JSON.stringify(msg.data)
+    if (sent[id][msg.channel] !== serialized) {
+        sent[id][msg.channel] = serialized
+        return false
     }
-    return match
+    return true
 }
 
 // send data per connection to all
 export function eachConnection(id: Clients, channel: any, callback: any) {
-    Object.entries(get(connections)[id] || {}).forEach(([clientID, value]: any) => {
-        let data = callback(value)
+    Object.entries(get(connections)[id] || {}).forEach(async ([clientID, value]: any) => {
+        const data = await callback(value)
         if (data) window.api.send(id, { id: clientID, channel, data })
     })
 }

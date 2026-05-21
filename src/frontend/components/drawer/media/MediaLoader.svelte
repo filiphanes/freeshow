@@ -1,247 +1,199 @@
 <script lang="ts">
+    import { onDestroy, onMount } from "svelte"
     import type { MediaStyle } from "../../../../types/Main"
     import type { Resolution } from "../../../../types/Settings"
     import type { MediaType, ShowType } from "../../../../types/Show"
-
-    import { mediaCache, outputs, styles, videoExtensions } from "../../../stores"
-    import { getExtension } from "../../helpers/media"
+    import { outputs, styles } from "../../../stores"
+    import { videoExtensions } from "../../../values/extensions"
+    import { cropImageToBase64, encodeFilePath, getExtension } from "../../helpers/media"
     import { getResolution } from "../../helpers/output"
     import Camera from "../../output/Camera.svelte"
     import { getStyleResolution } from "../../slide/getStyleResolution"
     import Capture from "../live/Capture.svelte"
-    // import Image from "./Image.svelte"
+    import NdiStream from "../live/NDIStream.svelte"
 
-    export let name: any = ""
+    export let name = ""
     export let path: string
-    export let loadFullImage: boolean = false
-    export let cameraGroup: string = ""
+    export let thumbnailPath = ""
+    export let loadFullImage = false
+    export let cameraGroup = ""
     export let mediaStyle: MediaStyle = {}
     export let type: null | MediaType | ShowType = null
-    export let hover: boolean = false
-    export let loaded: boolean = false
+    export let hover = false
+    export let loaded = false
     export let resolution: Resolution | null = null
-    export let duration: number = 0
-    export let videoElem: any = null
-    export let ghost: boolean = false
+    export let duration = 0
+    export let getDuration = false
+    export let ghost = false
+    export let videoElem: HTMLVideoElement | null = null
 
-    // TODO: update
-    $: if ((!type || type === "image") && canvas) {
-        duration = 0
+    $: if (path) loaded = false
 
-        // image cache
-        loadImage()
-    }
+    let width = 0
+    let height = 0
+    let mainElem: HTMLDivElement | null = null
 
-    // const thumbnailSize = { width: 1920, height: 1080 }
-    const thumbnailSize = { width: 480, height: 270 }
-    // const thumbnailSize = { width: 320, height: 180 }
-    // const thumbnailSize = {width: 240, height: 135}
-    // const thumbnailSize = { width: 160, height: 90 }
-    // const thumbnailSize = { width: 80, height: 45 }
-    let storedSize: any = {}
+    let resizeObserver: ResizeObserver | null = null
+    onMount(() => {
+        if (!mainElem) return
 
-    function loadImage() {
-        img = new Image()
-
-        let cache = $mediaCache[path]
-        let src: string = path
-        if (cache) src = cache.data
-
-        img.src = src
-        canvas.width = cache ? cache.size?.width || cache.width || 160 : thumbnailSize.width
-        canvas.height = cache ? cache.size?.height || cache.height || 90 : thumbnailSize.height
-
-        storedSize = cache ? cache.size || { width: cache.width, height: cache.height } : {}
-
-        if (cache) checkIfCacheLoaded()
-        else checkIfLoaded()
-    }
-
-    let img: any = null
-    function checkIfLoaded(): any {
-        if (!img.complete) return setTimeout(checkIfLoaded, 100)
-
-        let width = img.naturalWidth || thumbnailSize.width
-        let height = img.naturalHeight || thumbnailSize.height
-        let x = 0
-        let y = 0
-
-        if (width / height > customResolution.width / customResolution.height) {
-            height = height / (width / thumbnailSize.width)
-            width = thumbnailSize.width
-            y = (thumbnailSize.height - height) / 2
-        } else {
-            width = width / (height / thumbnailSize.height)
-            height = thumbnailSize.height
-            x = (thumbnailSize.width - width) / 2
-        }
-
-        // canvas?.getContext("2d").drawImage(img, 0, 0, 160, 90)
-        setTimeout(() => {
-            canvas?.getContext("2d").drawImage(img, x, y, width, height)
-            setTimeout(() => {
-                if (canvas) {
-                    mediaCache.update((a) => {
-                        a[path] = { data: canvas.toDataURL(), size: { width, height } }
-                        // a[path] = { data: canvas.toDataURL(), width, height, x, y }
-                        return a
-                    })
-                    // canvas?.getContext("2d").clearRect(0, 0, 160, 90)
-                    // cavas?.getContext("2d").drawImage(img, x, y, width, height)
-
-                    loaded = true
+        resizeObserver = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+                const { width: w, height: h } = entry.contentRect
+                if (width !== w || height !== h) {
+                    width = w
+                    height = h
                 }
-            }, 100)
-        }, 50)
-    }
-
-    function checkIfCacheLoaded(): any {
-        if (!img.complete) return setTimeout(checkIfCacheLoaded, 100)
-
-        // let cache = $mediaCache[path]
-        // canvas?.getContext("2d").drawImage(img, cache.x, cache.y, cache.width, cache.height)
-        canvas?.getContext("2d").drawImage(img, 0, 0, storedSize.width || 160, storedSize.height || 90)
-        loaded = true
-    }
+            }
+        })
+        resizeObserver.observe(mainElem)
+    })
+    onDestroy(() => {
+        if (resizeObserver && mainElem) resizeObserver.unobserve(mainElem)
+    })
 
     // type
     $: if (!type && path) {
         const extension = getExtension(path)
-        if ($videoExtensions.includes(extension)) type = "video"
+        if (videoExtensions.includes(extension)) type = "video"
     }
-
-    $: if (path) loaded = false
-
-    let canvas: any
-
-    let time = false
-    function ready() {
-        if (loaded || !videoElem) return
-
-        // check cache
-        let cache: any = $mediaCache[path]
-        if (cache) {
-            // TODO: cache
-            var img = new window.Image()
-            // console.log(cache)
-            img.src = cache.data
-
-            canvas.width = cache.size?.width || cache.width
-            canvas.height = cache.size?.height || cache.height
-            setTimeout(() => {
-                canvas?.getContext("2d").drawImage(img, 0, 0, cache.width, cache.height)
-                // canvas.getContext("2d").drawImage(videoElem, 0, 0, cache.width, cache.height)
-            }, 200)
-
-            duration = videoElem.duration
-            videoElem.currentTime = duration / 2
-            time = true
-
-            loaded = true
-            return
-        }
-
-        if (ghost) return
-
-        if (!time) {
-            duration = videoElem.duration
-            // it's sometimes Infinity for some reason
-            if (duration === Infinity) duration = 0
-            videoElem.currentTime = duration / 2
-            time = true
-        } else {
-            let width = videoElem.offsetWidth
-            let height = videoElem.offsetHeight
-            canvas.width = width
-            canvas.height = height
-            canvas.getContext("2d").drawImage(videoElem, 0, 0, width, height)
-
-            // set cache
-            setTimeout(() => {
-                if (!canvas) return
-                mediaCache.update((a: any) => {
-                    a[path] = { data: canvas.toDataURL(), width, height, size: { width, height } }
-                    return a
-                })
-
-                loaded = true
-            }, 1000)
-        }
-    }
-
-    let width: number = 0
-    let height: number = 0
 
     $: customResolution = resolution || getResolution(null, { $outputs, $styles })
 
-    $: if (mediaStyle.speed && videoElem) videoElem.playbackRate = mediaStyle.speed
+    $: if (mediaStyle.speed && videoElem) videoElem.playbackRate = Number(mediaStyle.speed || 0)
 
-    // retry on error (don't think this is neccesary)
+    $: if (!videoElem) duration = 0
+    function getCurrentDuration() {
+        if (!videoElem) return
+
+        const videoDuration = videoElem.duration
+        if (!Number.isFinite(videoDuration) || videoDuration <= 0) {
+            duration = 0
+            return
+        }
+
+        duration = videoDuration
+
+        // set video time
+        if (hover || !useOriginal) return
+        videoElem.currentTime = videoDuration / 2
+    }
+
+    // retry on error
     let retryCount = 0
-    $: if (path) retryCount = 0
+    const MAX_RETRIES = 3
+    $: if (path || thumbnailPath) retryCount = 0
     function reload() {
-        if (ghost || retryCount > 5) return
+        if (ghost || croppingActive) return
+
+        if (retryCount > MAX_RETRIES) {
+            loaded = true
+            return
+        }
+        loaded = false
+
+        let time = 500 * (retryCount + 1)
+        setTimeout(() => {
+            retryCount++
+        }, time)
+    }
+
+    $: useOriginal = hover || loadFullImage || retryCount > MAX_RETRIES || !thumbnailPath
+
+    // get duration
+    $: if (getDuration && type === "video" && thumbnailPath) getVideoDuration()
+    function getVideoDuration() {
+        if (ghost) return
 
         setTimeout(() => {
-            loaded = false
-            retryCount++
-        }, 100)
+            let video = document.createElement("video")
+            video.onloadeddata = () => {
+                const loadedDuration = video.duration
+                duration = Number.isFinite(loadedDuration) ? loadedDuration : 0
+                // video.pause()
+                video.src = ""
+            }
+            video.src = encodeFilePath(path)
+        }, 20)
+    }
+
+    $: mediaStyleString = `pointer-events: none;position: absolute;width: 100%;height: 100%;filter: ${mediaStyle.filter || ""};object-fit: ${mediaStyle.fit === "blur" ? "contain" : mediaStyle.fit || "contain"};transform: scale(${mediaStyle.flipped ? "-1" : "1"}, ${mediaStyle.flippedY ? "-1" : "1"});`
+    $: mediaStyleBlurString = `filter: ${mediaStyle.filter || ""} blur(4px) opacity(0.3);object-fit: cover;pointer-events: none;position: absolute;width: 100%;height: 100%;transform: scale(${mediaStyle.flipped ? "-1" : "1"}, ${mediaStyle.flippedY ? "-1" : "1"});`
+
+    let readyToLoad = false
+    onMount(() => {
+        // sometimes the img elem loaded before "loaded" was set to false, causing it to load twice!
+        readyToLoad = true
+    })
+
+    let croppedImage = ""
+    $: croppingActive = mediaStyle.cropping?.bottom || mediaStyle.cropping?.left || mediaStyle.cropping?.top || mediaStyle.cropping?.right
+    $: if (croppingActive) cropImage()
+    async function cropImage() {
+        croppedImage = await cropImageToBase64(path, mediaStyle.cropping)
+        if (croppedImage) useOriginal = true
     }
 </script>
 
-<div class="main" style="aspect-ratio: {customResolution.width}/{customResolution.height};" bind:offsetWidth={width} bind:offsetHeight={height}>
-    {#key path || retryCount}
+<div class="main" style="aspect-ratio: {customResolution.width}/{customResolution.height};" bind:this={mainElem}>
+    {#key path}
         {#if type === "camera"}
             <div bind:clientWidth={width} bind:clientHeight={height} style="height: 100%;">
-                <!-- TODO: media height -->
                 <Camera id={path} groupId={cameraGroup} class="media" style="{getStyleResolution({ width: videoElem?.videoWidth || 0, height: videoElem?.videoHeight || 0 }, width, height, 'cover')};" bind:videoElem />
             </div>
         {:else if type === "screen"}
             <Capture screen={{ id: path, name }} streams={[]} background />
-        {:else if type === "video"}
-            <div class="video" style="filter: {mediaStyle.filter || ''};transform: scale({mediaStyle.flipped ? '-1' : '1'}, {mediaStyle.flippedY ? '-1' : '1'});overflow: hidden;">
-                <canvas style={getStyleResolution({ width: canvas?.width || 0, height: canvas?.height || 0 }, width, height, mediaStyle.fit)} bind:this={canvas} />
-                {#if !loaded || hover || loadFullImage}
-                    {#key retryCount}
-                        <video style="pointer-events: none;position: absolute;width: 100%;height: 100%;object-fit: {mediaStyle.fit};" bind:this={videoElem} on:error={reload} src={path} on:canplaythrough={ready}>
-                            <track kind="captions" />
-                        </video>
-                    {/key}
-                {/if}
-            </div>
-        {:else}
-            {#if !loadFullImage || !loaded}
-                <canvas
-                    style="{getStyleResolution({ width: canvas?.width || 0, height: canvas?.height || 0 }, width, height, mediaStyle.fit)}filter: {mediaStyle.filter || ''};transform: scale({mediaStyle.flipped ? '-1' : '1'}, {mediaStyle.flippedY
-                        ? '-1'
-                        : '1'});"
-                    bind:this={canvas}
-                />
-            {/if}
-            {#if loadFullImage}
+        {:else if type === "ndi"}
+            <NdiStream screen={{ id: path, name }} background />
+        {:else if readyToLoad}
+            {#if ghost && !thumbnailPath}
+                <!-- show nothing if ghost without thumbnail -->
+            {:else if type !== "video" || (thumbnailPath && retryCount <= MAX_RETRIES)}
                 {#key retryCount}
-                    <img
-                        src={path}
-                        alt={name}
-                        loading="lazy"
-                        style="pointer-events: none;position: absolute;filter: {mediaStyle.filter || ''};object-fit: {mediaStyle.fit};transform: scale({mediaStyle.flipped ? '-1' : '1'}, {mediaStyle.flippedY ? '-1' : '1'});width: 100%;height: 100%;"
-                        on:error={reload}
-                    />
+                    {#if mediaStyle.fit === "blur"}
+                        <img src={type !== "video" && useOriginal ? (croppingActive ? croppedImage : encodeFilePath(path)) : encodeFilePath(thumbnailPath)} alt={name} style={mediaStyleBlurString} loading="lazy" class:loading={!loaded} class="hideError" />
+                    {/if}
+                    <img src={type !== "video" && useOriginal ? (croppingActive ? croppedImage : encodeFilePath(path)) : encodeFilePath(thumbnailPath)} alt={name} style={mediaStyleString} loading="lazy" class:loading={!loaded} class:hideError={ghost} on:error={reload} on:load={() => (loaded = true)} />
                 {/key}
+            {/if}
+            {#if type === "video" && useOriginal && !ghost}
+                {#if mediaStyle.fit === "blur"}
+                    <video style={mediaStyleBlurString} src={encodeFilePath(path)} muted>
+                        <track kind="captions" />
+                    </video>
+                {/if}
+                <video style={mediaStyleString} bind:this={videoElem} on:error={reload} src={encodeFilePath(path)} on:canplaythrough={getCurrentDuration}>
+                    <track kind="captions" />
+                </video>
             {/if}
         {/if}
     {/key}
 </div>
 
 <style>
-    .main,
-    .video {
+    .main {
         width: 100%;
         height: 100%;
         position: relative;
         display: flex;
         justify-content: center;
         align-items: center;
+
+        overflow: hidden;
+    }
+
+    img {
+        line-break: anywhere;
+    }
+
+    img.loading {
+        opacity: 0;
+        position: absolute;
+        pointer-events: none;
+    }
+
+    img.hideError {
+        color: transparent;
     }
 
     /* canvas,

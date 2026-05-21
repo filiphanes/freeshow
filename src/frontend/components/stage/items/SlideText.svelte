@@ -1,62 +1,164 @@
 <script lang="ts">
+    import type { Item, Line, OutSlide } from "../../../../types/Show"
+    import type { StageItem } from "../../../../types/Stage"
     import { showsCache } from "../../../stores"
+    import { getItemText } from "../../edit/scripts/textStyle"
     import { clone } from "../../helpers/array"
-    import { _show } from "../../helpers/shows"
+    import { getLayoutRef } from "../../helpers/show"
     import Textbox from "../../slide/Textbox.svelte"
     import Zoomed from "../../slide/Zoomed.svelte"
     import { getStyleResolution } from "../../slide/getStyleResolution"
     import Main from "../../system/Main.svelte"
+    import { getStageTextLayoutOffset } from "../stage"
 
-    export let currentSlide: any
-    export let next: boolean = false
-    export let chords: boolean = false
-    export let style: boolean = false
-    export let autoSize: boolean = false
-    export let fontSize: number = 0
-    export let stageItem: any
+    export let currentSlide: OutSlide
+    export let slideOffset = 0
+    export let chords = false
+    export let style = false
+    export let textStyle = ""
+    export let autoSize = false
+    export let fontSize = 0
+    export let stageItem: StageItem
     export let ref: {
         type?: "show" | "stage" | "overlay" | "template"
         showId?: string
         id: string
     }
 
-    $: index = currentSlide && currentSlide.index !== undefined && currentSlide.id !== "temp" ? currentSlide.index + (next ? 1 : 0) : null
-    $: slideId = index !== null && currentSlide ? _show(currentSlide.id).layouts("active").ref()[0][index!]?.id || null : null
-    $: slide = currentSlide?.id === "temp" && !next ? { items: currentSlide.tempItems } : currentSlide && slideId ? $showsCache[currentSlide?.id]?.slides?.[slideId] : null
+    $: showRef = currentSlide ? getLayoutRef(currentSlide.id) : []
 
-    // $: stageAutoSize = autoSize ? (items[0] ? getAutoSize(items[0], parent) : 0) : fontSize
+    $: slideIndex = currentSlide && currentSlide.index !== undefined && currentSlide.id !== "temp" ? currentSlide.index : null
+    $: customOffset = getStageTextLayoutOffset(showRef, slideOffset, slideIndex)
 
-    $: reversedItems = clone(slide?.items || []).reverse()
-    $: items = style ? slide?.items || [] : combineSlideItems()
+    $: slideId = (customOffset !== null || slideIndex !== null) && showRef ? showRef[(customOffset ?? slideIndex)!]?.id || null : null
+    $: slide = currentSlide?.id === "temp" ? getTempSlides(slideOffset) : currentSlide && slideId ? $showsCache[currentSlide?.id]?.slides?.[slideId] : null
 
-    function combineSlideItems() {
-        let oneItem: any = null
-        if (!slide?.items) return []
-        reversedItems
-            .filter((item) => (!item.type || item.type === "text") && (!item.bindings?.length || item.bindings.includes("stage")))
-            .forEach((item: any) => {
-                if (item.lines && item.lines[0]?.text?.[0]?.value?.length) {
+    function getTempSlides(slideOffset: number) {
+        if (slideOffset < 0) {
+            let includeLength = (currentSlide.previousSlides || [])?.length
+            return { items: currentSlide.previousSlides?.[includeLength - (slideOffset + 1 + includeLength)] }
+        }
+        if (slideOffset > 0) {
+            return { items: currentSlide.nextSlides?.[slideOffset - 1] }
+        }
+        return { items: currentSlide.tempItems }
+    }
+
+    $: itemNumber = Number(stageItem?.itemNumber || 0)
+    $: reversedItems = !itemNumber && stageItem?.invertItems ? clone(slide?.items || []) : clone(slide?.items || []).reverse()
+    $: items = style ? clone(slide?.items || []) : combineSlideItems(reversedItems)
+
+    function combineSlideItems(items: Item[]) {
+        let oneItem: Item | null = null // merge all textbox items into one
+        if (!items.length) return []
+
+        items
+            .filter((item) => (item?.type || "text") === "text" && (!item?.bindings?.length || item.bindings.includes("stage")))
+            .forEach((item, i) => {
+                if (itemNumber && itemNumber - 1 !== i) return
+
+                let text = getItemText(item)
+                if (itemNumber || text.length) {
                     if (!oneItem) oneItem = item
-                    else oneItem.lines.push(...item.lines)
+                    else {
+                        let EMPTY_LINE: Line = { align: "", text: [{ style: "", value: "" }] }
+                        oneItem.lines!.push(EMPTY_LINE, ...(item.lines || []))
+                    }
                 }
             })
 
-        return oneItem ? [oneItem] : []
+        if (!oneItem) return []
+        // WIP remove "empty" items
+        return [oneItem as Item]
     }
+
+    // PRE LOAD SLIDE ITEMS (AUTO SIZE)
+
+    let firstActive = false
+    let items1: Item[] = []
+    let items2: Item[] = []
+
+    const waitDuration = 200 // approximate auto size time
+    let timeout: NodeJS.Timeout | null = null
+    $: if (items) preloadItems()
+    function preloadItems() {
+        // don't update if exact same (not needed)
+        // if (JSON.stringify(firstActive ? items1 : items2) === JSON.stringify(items)) return
+
+        if (firstActive) items2 = clone(items)
+        else items1 = clone(items)
+
+        let currentlyLoading = !firstActive
+
+        if (timeout) clearTimeout(timeout)
+
+        timeout = setTimeout(() => timeoutFinished(currentlyLoading), items?.length && stageItem?.auto !== false ? waitDuration : 0)
+    }
+
+    function timeoutFinished(newActive: boolean) {
+        timeout = null
+        firstActive = newActive
+
+        if (firstActive) items2 = []
+        else items1 = []
+    }
+
+    $: clickRevealed = slideOffset === 0 && !!currentSlide?.itemClickReveal
+    $: revealed = slideOffset === 0 ? (currentSlide?.revealCount || 0) - 1 : -1
+    // WIP stage items merged (so this only works properly for the first item with linesReveal enabled (use "Item number" option))
+
+    $: useOriginalTextColor = typeof stageItem?.style === "string" && stageItem.style.includes("color:;")
+
+    // DEBUG: SlideText rendering and fontSize prop logging commented out
 </script>
 
-{#if slide}
-    {#if style}
+{#if style}
+    {#if slide}
         <Main let:resolution let:width let:height>
             <Zoomed background="transparent" style={getStyleResolution(resolution, width, height, "fit")} center>
-                {#each items as item}
-                    <Textbox {item} {style} {stageItem} {chords} {ref} stageAutoSize={item.auto && autoSize} {fontSize} addDefaultItemStyle={style} />
-                {/each}
+                <div class:loading={items1 && !firstActive}>
+                    {#each items1 as item, i}
+                        {#if !itemNumber || slide?.items?.length === 1 || itemNumber - 1 === i}
+                            <Textbox {item} customStyle={textStyle} {stageItem} {chords} {ref} maxLines={Number(slideOffset !== 0 && stageItem.lineCount)} maxLinesInvert={slideOffset < 0} stageAutoSize={(item.textFit !== "none" || item.auto) && autoSize} {fontSize} {clickRevealed} {revealed} isStage originalStyle />
+                        {/if}
+                        <!-- (style ? item.auto && item.textFit === "growToFit" : item.auto) -->
+                    {/each}
+                </div>
+                <div class:loading={items2 && firstActive}>
+                    {#each items2 as item, i}
+                        {#if !itemNumber || slide?.items?.length === 1 || itemNumber - 1 === i}
+                            <Textbox {item} customStyle={textStyle} {stageItem} {chords} {ref} maxLines={Number(slideOffset !== 0 && stageItem.lineCount)} maxLinesInvert={slideOffset < 0} stageAutoSize={(item.textFit !== "none" || item.auto) && autoSize} {fontSize} {clickRevealed} {revealed} isStage originalStyle />
+                        {/if}
+                    {/each}
+                    <!-- (style ? item.auto && (item.textFit || "shrinkToFit") === "growToFit" : item.auto) -->
+                </div>
             </Zoomed>
         </Main>
-    {:else}
-        {#each items as item}
-            <Textbox {item} {style} {stageItem} {chords} {ref} stageAutoSize={autoSize} {fontSize} addDefaultItemStyle={style} />
-        {/each}
     {/if}
+{:else}
+    <div class:loading={items1 && !firstActive}>
+        {#each items1 as item}
+            <Textbox {item} style={false} customStyle={textStyle} {stageItem} {chords} {ref} maxLines={Number(slideOffset !== 0 && stageItem.lineCount)} maxLinesInvert={slideOffset < 0} stageAutoSize={autoSize} {fontSize} {clickRevealed} {revealed} isStage {useOriginalTextColor} />
+        {/each}
+    </div>
+    <div class:loading={items2 && firstActive}>
+        {#each items2 as item}
+            <Textbox {item} style={false} customStyle={textStyle} {stageItem} {chords} {ref} maxLines={Number(slideOffset !== 0 && stageItem.lineCount)} maxLinesInvert={slideOffset < 0} stageAutoSize={autoSize} {fontSize} {clickRevealed} {revealed} isStage {useOriginalTextColor} />
+        {/each}
+    </div>
 {/if}
+
+<style>
+    div {
+        width: 100%;
+        height: 100%;
+    }
+
+    .loading {
+        position: absolute;
+        opacity: 0;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+    }
+</style>

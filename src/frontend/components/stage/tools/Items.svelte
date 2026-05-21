@@ -1,48 +1,106 @@
 <script lang="ts">
-    import { activeStage, outputs, stageShows, timers, variables } from "../../../stores"
-    import { keysToID } from "../../helpers/array"
+    import { uid } from "uid"
+    import { Item } from "../../../../types/Show"
+    import type { StageItem } from "../../../../types/Stage"
+    import { activeStage, dictionary, labelsDisabled, selected, stageShows, timers } from "../../../stores"
+    import { translateText } from "../../../utils/language"
+    import { getSortedStageItems, rearrangeStageItems, updateSortedStageItems } from "../../edit/scripts/itemHelpers"
+    import { getItemText } from "../../edit/scripts/textStyle"
+    import { itemBoxes } from "../../edit/values/boxes"
     import Icon from "../../helpers/Icon.svelte"
-    import { getActiveOutputs, getResolution } from "../../helpers/output"
-    import T from "../../helpers/T.svelte"
-    import Button from "../../inputs/Button.svelte"
-    import Center from "../../system/Center.svelte"
-    import Panel from "../../system/Panel.svelte"
-    import { updateStageShow } from "../stage"
+    import { clone } from "../../helpers/array"
+    import { getFileName } from "../../helpers/media"
+    import { checkWindowCapture, sortItemsByType } from "../../helpers/output"
+    import { getDynamicIds, replaceDynamicValues } from "../../helpers/showActions"
+    import InputRow from "../../input/InputRow.svelte"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
+    import MaterialDropdown from "../../inputs/MaterialDropdown.svelte"
+    import { getCustomStageLabel, updateStageShow } from "../stage"
+    import { getLikelyPosition } from "../../edit/scripts/autoPosition"
 
-    // TODO: more stage features
-    const titles = {
-        // slide_background ++
-        slide: ["current_slide_text", "current_slide", "current_slide_notes", "next_slide_text", "next_slide", "next_slide_notes"],
-        output: ["current_output"],
-        time: ["system_clock"], // , "video_time", "video_countdown"
-        global_timers: ["{timers}"],
-        variables: ["{variables}"],
-        // other: ["chords", "message"],
-    }
+    type ItemRef = { id: string; icon?: string; name?: string; maxAmount?: number }
+    const dynamicItems: ItemRef[] = [
+        { id: "slide_text", icon: "text" }
+        // { id: "slide_notes", icon: "notes" }, // added as dynamic value in textbox
+    ]
 
-    $: stageShow = $stageShows[$activeStage.id || ""] || {}
-    $: stageOutputId = stageShow?.settings?.output || getActiveOutputs($outputs, true, true)[0]
+    const normalItems: ItemRef[] = [
+        // { id: "text" }, // video time/countdown ... (preset with dynamic values)
+        // { id: "variable" }, // added as dynamic value in textbox
+        { id: "media", icon: "image" },
+        { id: "web" },
+        { id: "timer" },
+        { id: "clock" },
 
-    let enabledItems: any
-    $: enabledItems = stageShow.items || []
-    function click(item: string) {
-        if (!$activeStage.id) return
+        { id: "camera" },
+        { id: "slide_tracker", icon: "percentage" },
+        { id: "metronome", maxAmount: 1 },
+        { id: "visualizer", maxAmount: 1 },
 
-        let resolution = getResolution()
-        let style = `
-      width: ${resolution.width / 2}px;
-      height: ${resolution.height / 2}px;
-      left: ${resolution.width / 4}px;
-      top: ${resolution.height / 4}px;
-    `
+        // { id: "icon" },
+        { id: "current_output", icon: "screen" }
+    ]
 
-        stageShows.update((ss) => {
-            if (!enabledItems[item]) enabledItems[item] = { enabled: true, style, align: "" }
-            else if (enabledItems[item].enabled) enabledItems[item].enabled = false
-            else enabledItems[item].enabled = true
-            return ss
+    $: stageId = $activeStage.id || ""
+    $: stageShow = $stageShows[stageId] || {}
+    $: sortedItems = sortItemsByType(Object.values(stageShow.items || {}) as any)
+
+    // check slide text state
+    $: slideTextItems = Object.values(stageShow.items || {}).filter((a) => a.type === "slide_text")
+
+    const resolution = { width: 1920, height: 1080 }
+    const halfWidth = resolution.width * 0.5
+    const halfHeight = resolution.height * 0.5
+    const DEFAULT_STYLE = `width: ${halfWidth}px;height: ${halfHeight}px;left: ${halfWidth * 0.5}px;top: ${halfHeight * 0.5}px;`
+    const smallItems = ["timer", "clock", "slide_tracker"]
+
+    let timeout: NodeJS.Timeout | null = null
+    function addItem(itemType: string, textValue = "") {
+        if (!stageId) return
+
+        let itemId = uid(5)
+        stageShows.update((a) => {
+            if (!a[stageId]?.items) return a
+
+            let style = DEFAULT_STYLE
+            if (smallItems.includes(itemType) || textValue) {
+                const width = resolution.width * 0.45
+                const left = halfWidth - width * 0.5
+                const height = 150
+                const top = halfHeight - height * 0.5
+                style = `width: ${width}px;height: ${height}px;left: ${left}px;top: ${top}px;`
+            }
+
+            if (Object.keys(a[stageId]?.items).length > 0) {
+                style = getLikelyPosition(Object.values(a[stageId].items), style)
+            }
+
+            let item: StageItem = { type: itemType, style, align: "" }
+
+            if (itemType === "text") item.lines = [{ align: "", text: [{ style: "", value: textValue || "" }] }]
+            else if (itemType === "slide_text") {
+                item.slideOffset = slideTextItems.length
+                item.style += "font-size: 800px;"
+            }
+
+            a[stageId].items[itemId] = item
+            a[stageId].modified = Date.now()
+            return a
         })
 
+        updateSortedStageItems()
+
+        // select item
+        if (Object.keys($stageShows[stageId]?.items || {}).length > 1) {
+            activeStage.update((a) => {
+                a.items = [itemId]
+                return a
+            })
+        }
+
+        if (itemType === "current_output") checkWindowCapture()
+
+        // WIP:
         if (!timeout) {
             updateStageShow()
             timeout = setTimeout(() => {
@@ -52,73 +110,162 @@
         }
     }
 
-    let timeout: any = null
+    // ARRANGE
 
-    let timersList: any[] = keysToID($timers).sort((a, b) => a.name?.localeCompare(b.name))
-    let variablesList: any[] = keysToID($variables).sort((a, b) => a.name?.localeCompare(b.name))
+    const getIdentifier = {
+        text: (item: StageItem) => {
+            let text = getItemText(item as Item)
+            return text.slice(0, 10)
+        },
+        media: (item: StageItem) => {
+            let path = item.src
+            return getFileName(path || "")
+        },
+        timer: (item: StageItem) => {
+            if (!item.timer?.id) return ""
+            let timerName = $timers[item.timer.id]?.name || ""
+            return timerName
+        },
+        clock: () => ""
+    }
+
+    $: allItems = getSortedStageItems(stageId, $stageShows)
+    $: invertedItemList = Array.isArray(allItems) ? clone(allItems).reverse() : []
+
+    const excludeValues = ["project_", "time_", "exif_", "audio_", "meta_", "slide_text_", "show_text_full"]
+    const ref = { type: "stage" }
+    const dynamicValues = getDynamicIds()
+        .filter((id) => !excludeValues.find((v) => id.includes(v))) // || id.startsWith("project_")
+        .map((id) => ({ value: `{${id}}`, label: `{${id}}`, data: replaceDynamicValues(`{${id}}`, ref).slice(0, 20) }))
 </script>
 
-<div class="main">
-    <Panel>
-        {#each Object.entries(titles) as [title, items], i}
-            {#if title === "global_timers"}
-                <h6><T id="tabs.timers" /></h6>
-                {#if timersList.length}
-                    {#each timersList as timer}
-                        <Button on:click={() => click(title + "#" + timer.id)} active={enabledItems[title + "#" + timer.id]?.enabled} style="width: 100%;" bold={false}>
-                            <Icon id="timer" right />
-                            <span class="overflow">{timer.name}</span>
-                        </Button>
-                    {/each}
-                {:else}
-                    <Center faded>
-                        <T id="empty.general" />
-                    </Center>
-                {/if}
-            {:else if title === "variables"}
-                <h6><T id="tabs.variables" /></h6>
-                {#if variablesList.length}
-                    {#each variablesList as variable}
-                        <Button on:click={() => click(title + "#" + variable.id)} active={enabledItems[title + "#" + variable.id]?.enabled} style="width: 100%;" bold={false}>
-                            <Icon id="variable" right />
-                            <span class="overflow">{variable.name}</span>
-                        </Button>
-                    {/each}
-                {:else}
-                    <Center faded>
-                        <T id="empty.general" />
-                    </Center>
-                {/if}
-            {:else}
-                {#if i > 0}<h6><T id="stage.{title}" /></h6>{/if}
+<div class="tools">
+    <!-- <h6 style="margin-top: 10px;"><T id="stage.output" /></h6> -->
+    <div class="section">
+        {#each dynamicItems as item}
+            {@const title = (item.id === "slide_text" && slideTextItems.length === 1 ? "stage.next_slide_text" : "items." + (item.name || item.id)) + (item.id === "slide_text" && slideTextItems.length > 1 ? ` (+${slideTextItems.length})` : "")}
+            {@const disabled = !!(item.maxAmount && sortedItems[item.id]?.length >= item.maxAmount)}
 
-                {#each items as item}
-                    <Button on:click={() => click(title + "#" + item)} active={enabledItems[title + "#" + item]?.enabled} style="width: 100%;" bold={false}>
-                        <Icon id={item === "current_output" ? "screen" : item.split("_")[item.split("_").length - 1]} right />
-                        <span class="overflow"><T id="stage.{item}" /></span>
-                    </Button>
-
-                    <!-- alpha key output -->
-                    {#if item === "current_output" && $outputs[stageOutputId]?.keyOutput}
-                        <Button on:click={() => click(title + "#current_output_alpha")} active={enabledItems[title + "#current_output_alpha"]?.enabled} style="width: 100%;" bold={false}>
-                            <Icon id={"screen"} right />
-                            <span class="overflow"><T id="settings.enable_key_output" /></span>
-                        </Button>
-                    {/if}
-                {/each}
-            {/if}
+            <MaterialButton variant="outlined" {disabled} title="settings.add: <b>{title}</b>" style="width: 100%;padding: 12px 14px;" on:click={() => addItem(item.id)}>
+                <Icon id={item.icon || item.id} />
+                {#if !$labelsDisabled}{translateText(title)}{/if}
+            </MaterialButton>
         {/each}
-    </Panel>
+    </div>
+
+    <!-- common -->
+
+    <!-- <h6><T id="edit.add_items" /></h6> -->
+    <!-- <h6><T id="tools.items" /></h6> -->
+    <div class="section" style="margin-top: 5px;">
+        <InputRow>
+            <MaterialButton variant="outlined" icon="text" title="settings.add: <b>items.text</b>" style="width: 100%;" on:click={() => addItem("text")}>
+                {#if !$labelsDisabled}{translateText("items.text")}{/if}
+            </MaterialButton>
+
+            <MaterialDropdown label="actions.dynamic_values" options={dynamicValues} value="" style="border: 1px solid var(--primary-lighter);" on:change={(e) => addItem("text", e.detail)} onlyArrow />
+        </InputRow>
+    </div>
+
+    <div class="section">
+        {#each normalItems as item}
+            <MaterialButton variant="outlined" title="settings.add: <b>items.{item.id}</b>" style={item.id === "current_output" ? "width: 100%;" : "justify-content: left;width: 50%;padding: 12px 14px;"} on:click={() => addItem(item.id)}>
+                <Icon id={item.icon || item.id} size={0.9} />
+                {#if !$labelsDisabled}{translateText("items." + item.id)}{/if}
+            </MaterialButton>
+        {/each}
+    </div>
+
+    {#if invertedItemList.length}
+        <div style="margin-top: 10px;">
+            <div class="title">
+                <span style="display: flex;gap: 8px;align-items: center;padding: 8px 12px;">
+                    <Icon id="rearrange" white />
+                    <p>{translateText("edit.arrange_items")}</p>
+                </span>
+            </div>
+
+            <div
+                class="items {invertedItemList.length > 1 ? 'context #items_list_item_stage' : ''}"
+                style="display: flex;flex-direction: column;"
+                on:mousedown={(e) => {
+                    if (e.button !== 2) return
+                    // select on right click for context menu
+                    const itemId = (e.target?.closest(".item_button")?.id || "").slice(1)
+                    activeStage.set({ ...$activeStage, items: [itemId] })
+                }}
+            >
+                {#each invertedItemList as currentItem, i}
+                    {@const id = currentItem.id}
+                    {@const type = currentItem.type || "text"}
+
+                    <MaterialButton
+                        id="#{id}"
+                        variant="outlined"
+                        class="item_button"
+                        style="width: 100%;justify-content: space-between;padding: 2px 8px;"
+                        isActive={$activeStage.items.includes(id)}
+                        tab
+                        on:click={(e) => {
+                            selected.set({ id: null, data: [] })
+                            activeStage.update((ae) => {
+                                if (e.detail.ctrl) {
+                                    if (ae.items.includes(id)) ae.items.splice(ae.items.indexOf(id), 1)
+                                    else ae.items.push(id)
+                                } else if (!ae.items.includes(id)) ae.items = [id]
+                                else ae.items = []
+                                return ae
+                            })
+                        }}
+                    >
+                        <span style="display: flex;align-items: center;max-width: 70%;">
+                            <p style="opacity: 0.7;margin-inline-end: 10px;">{i + 1}</p>
+                            <Icon id={type === "icon" ? id || "" : itemBoxes[type]?.icon || "text"} custom={type === "icon"} size={0.8} />
+                            <p style="opacity: 0.9;margin-inline-start: 10px;;">{getCustomStageLabel(currentItem.type || id, currentItem, $dictionary) || translateText("items." + type)}</p>
+                            {#if getIdentifier[type]}<p style="margin-inline-start: 10px;max-width: 120px;opacity: 0.5;font-size: 0.8em;max-width: 40%;">{getIdentifier[type](currentItem)}</p>{/if}
+                        </span>
+                        <span>
+                            <MaterialButton disabled={i === allItems.length - 1} icon="down" title="actions.backward" style="padding: 8px;" on:click={() => rearrangeStageItems("backward", id)} />
+                            <MaterialButton disabled={i === 0} icon="up" title="actions.forward" style="padding: 8px;" on:click={() => rearrangeStageItems("forward", id)} />
+                        </span>
+                    </MaterialButton>
+                {/each}
+            </div>
+        </div>
+    {/if}
 </div>
 
 <style>
-    .main :global(button.active) {
-        font-weight: bold;
+    .tools {
+        padding: 8px 5px;
+
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
     }
 
-    .overflow {
-        text-overflow: ellipsis;
+    /* .section {
+        border-radius: 8px;
+        border: 1px solid var(--primary-lighter);
         overflow: hidden;
-        /* white-space: nowrap; */
+    } */
+    /* .section :global(button) {
+        border: none;
+    } */
+
+    /* title */
+
+    .title {
+        background-color: var(--primary-darker);
+        border-bottom: 1px solid var(--primary-lighter);
+
+        border-top-left-radius: 10px;
+        border-top-right-radius: 10px;
+        overflow: hidden;
+    }
+    .title p {
+        font-weight: 500;
+        font-size: 0.8rem;
+        opacity: 0.8;
     }
 </style>

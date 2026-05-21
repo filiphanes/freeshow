@@ -1,37 +1,30 @@
 <script lang="ts">
-  import { dictionary, language } from "../../stores"
+    import { dictionary, language } from "../../stores"
 
-  export let id: string
-  export let index: number = 0
-  export let lowercase: boolean = false
-  // let pre = '', suf = '';
-  let category: string, key: string
-  // if (id.includes('$:')) {
-  //   pre = id.slice(0, id.indexOf('$:'));
-  //   suf = id.slice(id.indexOf(':$') + 2, id.length);
-  //   id = id.slice(id.indexOf('$:') + 2, id.indexOf(':$'));
-  //   let category = id.slice(0, id.indexOf('.'));
-  //   let key = id.slice(id.indexOf('.') + 1, id.length);
-  // }
-  if (id.includes(".")) {
-    category = id.slice(0, id.indexOf(".")).replace("$:", "")
-    key = id.slice(id.indexOf(".") + 1, id.length).replace(":$", "")
-  }
+    export let id: string
+    export let index = 0
+    export let lowercase = false
+    export let replace: string[] = []
+
+    const hasPeriod = id?.includes(".")
+    const periodIndex = id?.indexOf(".")
+    $: category = hasPeriod ? id.slice(0, periodIndex).replace("$:", "") : ""
+    $: key = hasPeriod ? id.slice(periodIndex + 1, id.length).replace(":$", "") : ""
+
+    $: keyString = replacePlaceholders($dictionary[category]?.[key] || "", replace)
+
+    function replacePlaceholders(input: string, values: string[]) {
+        if (!values.length) return input
+        return input.replace(/\$(\d+)/g, (_, index) => values[index - 1] || "")
+    }
 </script>
 
 {#key language}
-  {#if $dictionary[category]?.[key]?.includes("{}")}
-    {$dictionary[category]?.[key].split("{}")[index] || `[${id}]`}
-  {:else if lowercase}
-    {$dictionary[category]?.[key].toLowerCase() || `[${id}]`}
-  {:else}
-    {$dictionary[category]?.[key] || `[${id}]`}
-  {/if}
+    {#if keyString.includes("{}")}
+        {keyString.split("{}")[index] || `[${id}]`}
+    {:else if lowercase}
+        {keyString.toLowerCase() || `[${id}]`}
+    {:else}
+        {keyString || `[${id}]`}
+    {/if}
 {/key}
-<!-- {#if $dictionary[category]?.[key]}
-  {pre}{$dictionary[category]?.[key]}{suf}
-{:else if id.includes('.')}
-  {`${pre}[${id}]${suf}`}
-{:else}
-  {id}
-{/if} -->

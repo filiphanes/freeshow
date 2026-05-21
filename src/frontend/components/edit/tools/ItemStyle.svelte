@@ -1,66 +1,62 @@
 <script lang="ts">
-    import { onMount } from "svelte"
     import type { Item } from "../../../../types/Show"
     import { activeEdit, activeShow, selected, showsCache } from "../../../stores"
-    import { hexToRgb, splitRgb } from "../../helpers/color"
-    import { history } from "../../helpers/history"
-    import { _show } from "../../helpers/shows"
-    import { getFilters, getStyles } from "../../helpers/style"
-    import { addFilterString, addStyleString } from "../scripts/textStyle"
-    import { itemEdits } from "../values/item"
-    import EditValues from "./EditValues.svelte"
+    import { wait } from "../../../utils/common"
     import { clone } from "../../helpers/array"
+    import { history } from "../../helpers/history"
+    import { percentageToAspectRatio, stylePosToPercentage } from "../../helpers/output"
+    import { getLayoutRef } from "../../helpers/show"
+    import { getStyles } from "../../helpers/style"
+    import { addFilterString, addStyleString } from "../scripts/textStyle"
+    import { setBoxInputValue } from "../values/boxes"
+    import { itemSections } from "../values/item"
+    import EditValues from "./EditValues.svelte"
 
     export let allSlideItems: Item[]
     export let item: Item | null
 
-    let itemEditValues = clone(itemEdits)
+    let currentItemSections = clone(itemSections)
 
-    let data: { [key: string]: any } = {}
+    let data: { [key: string]: string } = {}
 
-    $: if (item?.style || item === null) data = getStyles(item?.style, true)
+    $: if (item?.style || item === null) updateData()
+    function updateData() {
+        data = getStyles(item?.style, true)
+        dataChanged()
+    }
+
+    // $: if (data) dataChanged()
+    function dataChanged() {
+        // gradient
+        const styles = getStyles(item?.style)
+        const isGradient = styles.background?.includes("gradient")
+        if (isGradient) data["background-color"] = styles.background
+
+        // setBoxInputValue({ icon: "", edit: itemEditValues }, "default", "background-opacity", "hidden", isGradient || !data["background-color"])
+
+        const transform = data["transform"] || ""
+        const showPerspective = transform.includes("rotateX") && !transform.includes("rotateX(0deg)")
+        setBoxInputValue(currentItemSections, "transform", "perspective", "hidden", !showPerspective)
+
+        data = stylePosToPercentage(data)
+    }
 
     $: itemBackFilters = getStyles(item?.style)["backdrop-filter"]
-    $: if (itemBackFilters) getItemFilters()
-    function getItemFilters() {
-        if (!item) return
+    // $: if (itemBackFilters) getItemFilters()
+    // function getItemFilters() {
+    //     if (!item) return
 
-        // update backdrop filters
-        let backdropFilters = getFilters(itemBackFilters || "")
-        let defaultBackdropFilters = itemEditValues.backdrop_filters || []
-        itemEditValues.backdrop_filters.forEach((filter: any) => {
-            let value = backdropFilters[filter.key] ?? defaultBackdropFilters.find((a) => a.key === filter.key)?.value
-            let index = itemEditValues.backdrop_filters.findIndex((a: any) => a.key === filter.key)
-            itemEditValues.backdrop_filters[index].value = value
-        })
-    }
+    //     itemEditValues.backdrop_filters?.inputs.forEach((a) => {
+    //         a.flat().forEach((filter) => {
+    //             let value = backdropFilters?.[filter.key || ""]
+    //             if (value) filter.values.value = value
+    //         })
+    //     })
+    // }
 
-    onMount(() => {
-        getBackgroundOpacity()
-    })
-
-    // background opacity
-    function getBackgroundOpacity() {
-        let backgroundValue = data["background-color"] || ""
-        if (!backgroundValue.includes("rgb")) return
-
-        let rgb = splitRgb(backgroundValue)
-        let boIndex = itemEditValues.style.findIndex((a) => a.id === "background-opacity")
-        if (boIndex < 0) return
-        itemEditValues.style[boIndex].value = rgb.a
-    }
-    function getOldOpacity() {
-        let backgroundValue = data["background-color"] || ""
-        if (!backgroundValue.includes("rgb")) return 1
-
-        let rgb = splitRgb(backgroundValue)
-        return rgb.a
-    }
-
-    function updateStyle(e: any) {
+    async function updateStyle(e: any) {
         let input = e.detail
-
-        console.log(input)
+        input = percentageToAspectRatio(input)
 
         if (input.id === "backdrop-filter" || input.id === "transform") {
             let oldString = input.id === "backdrop-filter" ? itemBackFilters : data[input.id]
@@ -68,17 +64,16 @@
             input.key = input.id
         }
 
-        // background opacity
-        if (input.id === "background-opacity" || (input.value && input.key === "background-color")) {
-            let backgroundColor = input.key === "background-color" ? input.value || "" : data["background-color"] || "rgb(0 0 0);"
-            let rgb = backgroundColor.includes("rgb") ? splitRgb(backgroundColor) : hexToRgb(backgroundColor)
-            let opacity = input.id === "background-opacity" ? input.value : getOldOpacity()
-            let newColor = "rgb(" + [rgb.r, rgb.g, rgb.b].join(" ") + " / " + opacity + ");"
-
-            input.key = "background-color"
-            input.value = newColor
-
-            setTimeout(getBackgroundOpacity, 100)
+        // gradient colors
+        if (input.id === "style" && input.key === "background-color") {
+            // set "background" value instead of "background-color"
+            if (typeof input.value !== "string") input.value = ""
+            if (input.value.includes("gradient")) input.key = "background"
+            // reset "background" value
+            else if (data.background) {
+                updateStyle({ detail: { ...input, key: "background", value: "" } })
+                await wait(10)
+            }
         }
 
         let allItems: number[] = $activeEdit.items
@@ -88,13 +83,13 @@
 
         /////
 
-        let ref: any[] = _show("active").layouts("active").ref()[0] || {}
+        let ref = getLayoutRef()
         let slides: string[] = [ref[$activeEdit.slide ?? ""]?.id]
         let slideItems: number[][] = [allItems]
         let showSlides = $showsCache[$activeShow?.id || ""]?.slides || {}
 
         // get all selected slides
-        if ($selected.id === "slide") {
+        if ($selected.id === "slide" && Array.isArray($selected.data)) {
             let selectedSlides = $selected.data.filter(({ index }) => index !== $activeEdit.slide!)
             slides.push(...selectedSlides.map(({ index }) => ref[index]?.id))
 
@@ -113,7 +108,16 @@
 
         /////
 
-        let values: any = {}
+        let values: { [key: string]: string[] } = {}
+
+        // get relative value
+        let relativeValue = 0
+        if (input.relative) {
+            let items = showSlides[slides[0]]?.items || allSlideItems
+            let firstItemStyle = items?.[allItems[0]]?.style || ""
+            let previousValue = Number(getStyles(firstItemStyle, true)?.[input.key] || "0")
+            relativeValue = Number(input.value.replace("px", "")) - previousValue
+        }
 
         slides.forEach((slide, i) => {
             if (!slideItems[i].length) return
@@ -122,17 +126,24 @@
             // loop through all items
             slideItems[i].forEach((itemIndex) => {
                 let currentSlideItem = showSlides[slide]?.items?.[itemIndex] || allSlideItems[itemIndex]
-                values[slide].push(addStyleString(currentSlideItem.style, [input.key, input.value]))
+                if (!currentSlideItem) return
+
+                let newValue = input.value
+                if (input.relative) {
+                    let previousItemValue = Number(getStyles(currentSlideItem.style, true)?.[input.key] || "0")
+                    newValue = previousItemValue + relativeValue + "px"
+                }
+
+                values[slide].push(addStyleString(currentSlideItem.style, [input.key, newValue]))
             })
         })
 
-        if (input.id === "CSS") {
-            values = { [slides[0]]: [input.value.replaceAll("\n", "")] }
+        if (input.id.includes("CSS")) {
+            values = { [slides[0]]: [input.value] }
             // only change one selected
             allItems = [allItems[0]]
         }
 
-        console.log(values)
         if (!Object.values(values).length) return
 
         if ($activeEdit.id) {
@@ -140,7 +151,7 @@
                 id: "UPDATE",
                 oldData: { id: $activeEdit.id },
                 newData: { key: "items", subkey: "style", data: Object.values(values)[0], indexes: allItems },
-                location: { page: "edit", id: $activeEdit.type + "_items", override: true },
+                location: { page: "edit", id: $activeEdit.type + "_items", override: true }
             })
             return
         }
@@ -150,12 +161,20 @@
             history({
                 id: "setItems",
                 newData: { style: { key: "style", values: values[slide] } },
-                location: { page: "edit", show: $activeShow!, slide, items: slideItems[i], override: "slideitem_" + slide + "_items_" + slideItems[i].join(",") },
+                location: { page: "edit", show: $activeShow!, slide, items: slideItems[i], override: "slideitem_" + slide + "_items_" + slideItems[i].join(",") }
             })
         })
     }
+
+    function updateStyle2(e: any) {
+        const input = e.detail
+        input.value = input.values.value
+        input.input = input.type
+
+        if (input.key === "left" || input.key === "top" || input.key === "width" || input.key === "height") input.relative = true
+
+        updateStyle({ detail: input })
+    }
 </script>
 
-{#key item}
-    <EditValues edits={itemEditValues} defaultEdits={clone(itemEdits)} styles={data} {item} on:change={updateStyle} />
-{/key}
+<EditValues sections={currentItemSections} {item} styles={data} type="item" on:change={updateStyle2} />

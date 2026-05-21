@@ -5,6 +5,7 @@
     import { destroy, receive, send } from "../../../utils/request"
     import { findMatchingOut } from "../../helpers/output"
     import Card from "../Card.svelte"
+    import SelectElem from "../../system/SelectElem.svelte"
 
     interface Screen {
         id: string
@@ -12,73 +13,61 @@
     }
     export let screen: Screen
     let frame: any
-    export let background: boolean = false
+    export let background = false
+    export let mirror = false
 
-    let canvas: any
+    let canvas: HTMLCanvasElement | undefined
 
     onMount(() => {
-        // WIP: frame rate
-        if (background) send(NDI, ["CAPTURE_STREAM"], { source: screen })
-        else send(NDI, ["RECEIVE_STREAM"], { source: screen })
+        if (background) {
+            if (!mirror) send(NDI, ["CAPTURE_STREAM"], { source: screen, outputId: Object.keys($outputs)[0] })
+        } else send(NDI, ["RECEIVE_STREAM"], { source: screen })
     })
 
     $: if (frame) setCanvas()
-    async function setCanvas() {
+    function setCanvas() {
         if (!canvas) return
-        console.log(frame)
 
         let ctx = canvas.getContext("2d")
 
-        // Create a new ImageData object
-        let imageData = ctx.createImageData(canvas.width, canvas.height)
-        // Copy the pixel data from the Buffer to the ImageData object
-        for (let i = 0; i < frame.data.length; i++) {
-            imageData.data[i] = frame.data[i]
-        }
-        // Put the ImageData onto the canvas
-        ctx.putImageData(imageData, 0, 0)
+        const WIDTH = frame.xres
+        const HEIGHT = frame.yres
+        canvas.width = WIDTH
+        canvas.height = HEIGHT
 
-        //////////////
-
-        // var clampedArray = new Uint8ClampedArray(frame.data)
-        // var imageData = new ImageData(clampedArray, canvas.width, canvas.height)
-        // // var imageData = new ImageData(clampedArray, frame.xres, frame.yres);
-        // ctx.putImageData(imageData, 0, 0)
-
-        //////////////
-
-        // canvas.width = frame.xres
-        // canvas.height = frame.yres
-
-        // const arr = new Uint8ClampedArray(frame.data)
-        // const pixels = new ImageData(arr, frame.xres, frame.yres)
-        // const bitmap = await createImageBitmap(pixels)
-
-        // ctx.clearRect(0, 0, canvas.width, canvas.height)
-        // ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+        const imageData = new ImageData(new Uint8ClampedArray(frame.data), WIDTH, HEIGHT)
+        ctx?.putImageData(imageData, 0, 0)
     }
 
-    const receiveNDI: any = {
-        RECEIVE_STREAM: (data) => {
+    const receiveNDI = {
+        RECEIVE_STREAM: (data: { id: string; frame: any; time: number }) => {
             if (data.id !== screen.id) return
+            loaded = true
+
+            let timeSinceSent = Date.now() - data.time
+            if (timeSinceSent > 100) return // skip frames if overloaded
+
             frame = data.frame
-        },
+        }
     }
 
     receive(NDI, receiveNDI, screen.id)
     onDestroy(() => {
         destroy(NDI, screen.id)
+        if (background && !mirror) send(NDI, ["CAPTURE_DESTROY"], { id: screen.id, outputId: Object.keys($outputs)[0] })
     })
+
+    let loaded = false
 </script>
 
 {#if background}
     <canvas bind:this={canvas} />
 {:else}
-    <!-- class="context #live_card" -->
-    <Card outlineColor={findMatchingOut(screen.id, $outputs)} active={findMatchingOut(screen.id, $outputs) !== null} on:click label={screen.name} icon="ndi" white>
-        <!-- <SelectElem style="display: flex;" id="ndi" data={{ id: screen.id, type: "ndi", name: screen.name }} draggable> -->
-        <canvas bind:this={canvas} />
-        <!-- </SelectElem> -->
+    <!-- class="context #screen_card" -->
+    <Card outlineColor={findMatchingOut(screen.id, $outputs)} active={findMatchingOut(screen.id, $outputs) !== null} on:click title={screen.name} label={screen.name} {loaded} icon="ndi" white showPlayOnHover>
+        <SelectElem style="display: flex;" id="ndi" data={{ id: screen.id, type: "ndi", name: screen.name }} draggable>
+            <canvas bind:this={canvas} />
+        </SelectElem>
     </Card>
 {/if}
 
@@ -86,7 +75,7 @@
     canvas {
         width: 100%;
         height: 100%;
-        aspect-ratio: 1920/1080;
+        /* aspect-ratio: 1920/1080; */
 
         object-fit: contain;
     }

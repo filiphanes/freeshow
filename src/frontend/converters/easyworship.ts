@@ -1,12 +1,15 @@
 import { get } from "svelte/store"
 import { uid } from "uid"
+import { DEFAULT_ITEM_STYLE } from "../components/edit/scripts/itemHelpers"
 import { getSlidesText } from "../components/edit/scripts/textStyle"
-import { history } from "../components/helpers/history"
+import { setQuickAccessMetadata } from "../components/helpers/setShow"
 import { checkName, getGlobalGroup } from "../components/helpers/show"
-import { newToast } from "../utils/messages"
+import { newToast } from "../utils/common"
+import { translateText } from "../utils/language"
 import { ShowObj } from "./../classes/Show"
 import { activePopup, alertMessage, dictionary, groups, shows } from "./../stores"
 import { createCategory, setTempShows } from "./importHelpers"
+import { trimNameFromString } from "./txt"
 
 interface Song {
     administrator: string
@@ -35,101 +38,84 @@ interface Words {
 }
 
 export function convertEasyWorship(data: any) {
-    // close drawer to prevent loading songs
-    // drawer.set({ height: 40, stored: null })
+    const categoryId = createCategory("EasyWorship")
 
-    createCategory("EasyWorship")
-
-    let songs = data.find((a: any) => a.content.song)?.content.song
-    let songsWords = data.find((a: any) => a.content.word)?.content.word
+    const songs = data.find((a: any) => a.content.song)?.content.song
+    const songsWords = data.find((a: any) => a.content.word)?.content.word
     if (!songsWords) {
-        newToast("$toast.no_songswords_easyworship")
+        newToast("toast.no_songswords_easyworship")
         return
     }
-    // console.log(songsWords)
-    // TODO: promise
-    let i = 0
-    let importingText = get(dictionary)?.popup.importing || "Importing"
 
-    let tempShows: any[] = []
+    let i = 0
+    const importingText = translateText("popup.importing")
+
+    const tempShows: any[] = []
+
+    const songsCount: number = songsWords.length || 0
 
     asyncLoop()
-    // songsWords.forEach(asyncLoop);
-    // songsWords?.forEach()
-    // activePopup.set(null)
-    // console.log(songs)
-    // console.log(songsWords)
-
-    // function asyncLoop(words: Words, i: number) {
     function asyncLoop() {
-        let words: Words = songsWords[i]
-        // let song: Song | null = songs?.[words.song_id - 1] || null
-        let song: Song | null = songs?.find((a: Song) => a.rowid === words.song_id) || null
+        const words: Words = songsWords[i]
+        const song: Song | null = songs?.find((a: Song) => a.rowid === words.song_id) || null
 
-        // let song: Song | null = songs?.[i] || null
-        let percentage: string = ((i / songsWords.length) * 100).toFixed()
+        const percentage: string = ((i / songsCount) * 100).toFixed()
         activePopup.set("alert")
-        alertMessage.set(importingText + " " + i + "/" + songsWords.length + " (" + percentage + "%)" + "<br>" + (song?.title || ""))
+        alertMessage.set(importingText + " " + String(i) + "/" + String(songsCount) + " (" + percentage + "%)" + "<br>" + (song?.title || ""))
 
-        if (get(shows)[song?.song_uid || ""] && i < songsWords.length - 1) {
+        if (get(shows)[song?.song_uid || ""] && i < songsCount - 1) {
             i++
             requestAnimationFrame(asyncLoop)
             return
         }
 
-        // let category = get(drawerTabsData).shows?.activeSubTab || null
-        // if (category === "all" || category === "unlabeled") category = null
-
-        let layoutID = uid()
-        let show = new ShowObj(false, "easyworship", layoutID)
+        const layoutID = uid()
+        let show = new ShowObj(false, categoryId, layoutID)
+        show.origin = "easyworship"
         if (song) {
             show.meta = {
                 title: song?.title || "",
                 author: song.author || "",
                 copyright: song.copyright || "",
-                CCLI: song.vendor_id || "",
+                CCLI: song.reference_number || ""
             }
         }
+        if (show.meta.CCLI) show = setQuickAccessMetadata(show, "CCLI", show.meta.CCLI)
 
-        let { slides, layout }: any = createSlides(words)
+        const { slides, layout }: any = createSlides(words)
 
         // if (!Object.keys(slides).length || !layout.length) {
         //   console.log("ERROR " + i + ", " + song?.title, songsWords, words, slides)
         // }
 
-        let showId = song?.song_uid || uid()
+        const showId = song?.song_uid || uid()
 
         show.slides = slides
-        show.layouts = { [layoutID]: { name: get(dictionary).example?.default || "", notes: song?.description || "", slides: layout } }
-        let allText = getSlidesText(slides).slice(0, 20)
+        show.layouts = { [layoutID]: { name: translateText("example.default"), notes: song?.description || "", slides: layout } }
+        const allText = trimNameFromString(getSlidesText(slides))
         show.name = checkName(song?.title || allText || showId, showId)
         show.settings.template = "default"
 
         if (allText.length) tempShows.push({ id: showId, show })
 
-        if (i + 1 < songsWords.length) {
-            // wait 5 seconds every 100 seconds to catch up ??
-            // let nextTimer: number = 0
-            // if (i > 0 && i % 100 === 0) nextTimer = 5000
+        if (i + 1 < songsCount) {
             i++
-            // setTimeout(asyncLoop, nextTimer)
             requestAnimationFrame(asyncLoop)
         } else {
             setTempShows(tempShows)
-            history({ id: "SHOWS", newData: { data: tempShows }, location: { page: "show" } })
         }
     }
 }
 
 // https://asecuritysite.com/coding/asc2
 const replaceCodes: any = {
-    "u8211?": "–",
+    "u8211?": "–"
 }
 
 function decodeString(input) {
-    let regex = /u(\d+)\?/g
+    const regex = /u(\d+)\?/g
 
-    let decodedString = input.replace(regex, (_match, number) => {
+    const decodedString = input.replace(regex, (_match, number) => {
         return String.fromCharCode(Number(number))
     })
 
@@ -137,16 +123,18 @@ function decodeString(input) {
 }
 
 function createSlides({ words }: Words) {
-    let slides: any = {}
-    let layout: any[] = []
+    const slides: any = {}
+    const layout: any[] = []
 
     // format
-    let newSlides: any[] = []
+    const newSlides: any[] = []
     let lines: any[] = []
+
+    // easyworship2 format not supported
 
     // .replaceAll('"', '\\"')
     words = words.replaceAll("\\", "").replaceAll("\r\n", "")
-    let index = words.indexOf("pardli0fi0ri0sb0slsa0") + 22
+    let index = words.indexOf("li0fi0ri0sb0slsa0", words.indexOf("pard")) + 22
     if (index < 22) index = words.indexOf("sdfsauto")
     words = words.slice(index, words.lastIndexOf("}"))
     if (words.charAt(words.length - 2) === "}") words = words.slice(0, words.length - 1)
@@ -160,18 +148,21 @@ function createSlides({ words }: Words) {
 
     let splitString = "li0fi0ri0sb0slsa0 "
     if (words.indexOf(splitString) < 0) splitString = "sdfsauto"
-    let splitted = words?.split(splitString)
+    const splitted = words?.split(splitString)
     // console.log(splitted)
     splitted.forEach((text: any) => {
         // if (text.includes("plainf1fntnamaut")) {
         // let sliced: string = text.slice(text.indexOf("t ") + 2, text.lastIndexOf("par"))
         // <SIDESKIFT>
         // sdewtemplatestyle101
-        let sliced: string = text.slice(text.indexOf(" "), text.indexOf("par")).replaceAll("plainf1fntnamaut ", "").trim()
+        const sliced: string = text.slice(text.indexOf(" "), text.indexOf("par")).replaceAll("plainf1fntnamaut ", "").trim()
 
         // console.log(text.includes("plainf") && sliced.length, sliced)
         if (sliced.length) {
             sliced.split("line").forEach((line: string, i: number) => {
+                // \sdewparatemplatestyle102\plain\sdewtemplatestyle102\
+                if (line.includes("templatestyle")) return
+
                 // console.log(line, line.slice(line.indexOf(" ") + 1, line.length))
                 if (i > 0) line = line.slice(line.indexOf(" ", 2) + 1, line.length)
                 let plainIndex = line.indexOf("plainf")
@@ -189,51 +180,51 @@ function createSlides({ words }: Words) {
     })
     if (lines.length) newSlides.push(lines)
 
-    newSlides?.forEach((lines: any) => {
-        if (!lines.length) lines = [""]
-        if (lines.length) {
-            let id: string = uid()
-            let group = lines[0]
+    newSlides?.forEach((slideLines: any) => {
+        if (!slideLines.length) slideLines = [""]
+        if (slideLines.length) {
+            const id: string = uid()
+            let group = slideLines[0]
                 .replace(/[0-9:]/g, "")
                 .toLowerCase()
                 .trim()
             if (get(groups)[group]) {
                 // console.log("REMOVE FIRST", lines)
-                lines.shift()
+                slideLines.shift()
             } else {
-                let found: boolean = false
+                let found = false
                 Object.keys(get(groups)).forEach((key) => {
-                    let g = get(groups)[key]
+                    const g = get(groups)[key]
                     if (
                         g.default &&
                         get(dictionary)
-                            .groups[key].replace(/[0-9:]/g, "")
+                            .groups?.[key].replace(/[0-9:]/g, "")
                             .toLowerCase() === group &&
                         !found
                     ) {
                         found = true
                         group = key
-                        lines.shift()
+                        slideLines.shift()
                     }
                 })
             }
 
             layout.push({ id })
-            let items = [
+            const items = [
                 {
-                    style: "left:50px;top:120px;width:1820px;height:840px;",
-                    lines: lines.map((a: any) => ({ align: "", text: [{ style: "", value: a }] })),
-                },
+                    style: DEFAULT_ITEM_STYLE,
+                    lines: slideLines.map((a: any) => ({ align: "", text: [{ style: "", value: a }] }))
+                }
             ]
             slides[id] = {
                 group: "",
                 color: null,
                 settings: {},
                 notes: "",
-                items,
+                items
             }
 
-            let globalGroup = getGlobalGroup(group)
+            const globalGroup = getGlobalGroup(group)
             slides[id].globalGroup = globalGroup || "verse"
         }
     })

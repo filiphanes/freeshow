@@ -19,7 +19,9 @@ export function addStyle(selection: { start: number; end: number }[], item: Item
         line.text = newText
 
         function textStyle(text: any) {
-            const length: number = text.value.length
+            const value = text.value || ""
+            const length = value.length
+
             let from = 0
             let to = length
 
@@ -27,12 +29,12 @@ export function addStyle(selection: { start: number; end: number }[], item: Item
             if (pos < selection[i].end && pos + length > selection[i].end) to = selection[i].end - pos
 
             if ((pos < selection[i].start && pos + length > selection[i].start) || (pos < selection[i].end && pos + length > selection[i].end) || (pos >= selection[i].start && pos + length <= selection[i].end)) {
-                if (from > 0) newText.push({ value: text.value.slice(0, from), style: text.style })
+                if (from > 0) newText.push({ value: value.slice(0, from), style: text.style })
                 if (to - from > 0 && to - from <= length) {
                     let newStyle: string = addStyleString(text.style, style)
-                    newText.push({ value: text.value.slice(from, to), style: newStyle })
+                    newText.push({ value: value.slice(from, to), style: newStyle })
                 }
-                if (to < length) newText.push({ value: text.value.slice(to, length), style: text.style })
+                if (to < length) newText.push({ value: value.slice(to, length), style: text.style })
             } else newText.push(text)
 
             pos += length
@@ -78,6 +80,8 @@ function combine(item: Item): Item {
 
 // add new style to string and remove old
 export function addStyleString(oldStyle: string, style: any[]): string {
+    if (typeof oldStyle !== "string") return ""
+
     let array: string[] = oldStyle.split(";")
     // remove last if empty
     if (!array[array.length - 1].length) array.pop()
@@ -169,19 +173,21 @@ export function getItemStyleAtPos(lines: Line[], pos: null | { start: number; en
     let style: string = ""
     ;(pos || lines).forEach((_a: any, i: number) => {
         let currentPos: number = 0
-        lines[i]?.text.some((text: any): any => {
-            // if (pos) console.log(currentPos, pos[i].end, currentPos <= pos[i].end, currentPos + text.value.length >= pos[i].end)
-            if (pos && currentPos <= pos[i].end && currentPos + text.value.length >= pos[i].end) {
+        lines[i]?.text?.some((text: any): any => {
+            const value = text.value || ""
+
+            // if (pos) console.log(currentPos, pos[i].end, currentPos <= pos[i].end, currentPos + value.length >= pos[i].end)
+            if (pos?.[i] && currentPos <= pos[i].end && currentPos + value.length >= pos[i].end) {
                 style = text.style
                 return true
             }
 
-            currentPos += text.value.length
+            currentPos += value.length
         })
     })
 
     // filter out empty lines
-    lines = lines.filter((a) => a.text.length)
+    lines = lines.filter((a) => a?.text?.length)
 
     if (!style.length && lines.length) style = lines[lines.length - 1].text[lines[lines.length - 1].text.length - 1]?.style || ""
 
@@ -199,15 +205,14 @@ export function getLastLineAlign(item: Item, selection: any): string {
 
 // get text of item.text...
 export function getItemText(item: Item): string {
-    if (!item) return ""
+    let text = ""
 
-    let text: string = ""
-    if (item.lines)
-        item.lines.forEach((line: any) => {
-            line.text?.forEach((content: any) => {
-                text += content.value
-            })
-        })
+    for (const line of item?.lines ?? []) {
+        for (const t of line.text ?? []) {
+            if (t.value) text += t.value
+        }
+    }
+
     return text
 }
 
@@ -264,6 +269,8 @@ export function setCaret(element: any, { line = 0, pos = 0 }) {
     let childElem = -1
     let currentTextLength = 0
     lineElem.childNodes.forEach((elem: any, i: number) => {
+        if (!elem?.innerText) return
+
         currentTextLength += elem.innerText.length
         if (pos <= currentTextLength && childElem < 0) childElem = i
     })
@@ -324,6 +331,8 @@ export function createRange2(node: any, selection: { start: number; end: number 
             let pos: null | number = 0
             if (br.childNodes.length) {
                 new Array(...br.childNodes).forEach((text: any) => {
+                    if (!text?.innerText) return
+
                     pos += text.innerText.length
                     if (!started && pos !== null && pos >= a.start) {
                         started = true

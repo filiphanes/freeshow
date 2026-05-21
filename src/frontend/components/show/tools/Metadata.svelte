@@ -1,210 +1,115 @@
 <script lang="ts">
     import { onMount } from "svelte"
-    import { activeShow, dictionary, outputs, showsCache, styles, templates } from "../../../stores"
-    import T from "../../helpers/T.svelte"
+    import { activeShow, customMetadata, dictionary, shows, showsCache } from "../../../stores"
+    import { translateText } from "../../../utils/language"
     import { history } from "../../helpers/history"
-    import Checkbox from "../../inputs/Checkbox.svelte"
-    import Dropdown from "../../inputs/Dropdown.svelte"
-    import TextInput from "../../inputs/TextInput.svelte"
-    import Panel from "../../system/Panel.svelte"
-    import Notes from "./Notes.svelte"
-    import { getActiveOutputs } from "../../helpers/output"
-
-    // WIP duplicate of Outputs.svelte
-    const metaDisplay: any[] = [
-        { id: "never", name: "$:show_at.never:$" },
-        { id: "always", name: "$:show_at.always:$" },
-        { id: "first", name: "$:show_at.first:$" },
-        { id: "last", name: "$:show_at.last:$" },
-        { id: "first_last", name: "$:show_at.first_last:$" },
-    ]
+    import { getCustomMetadata, initializeMetadata } from "../../helpers/show"
+    import MaterialTextInput from "../../inputs/MaterialTextInput.svelte"
+    import Tip from "../../main/Tip.svelte"
+    import MaterialNumberInput from "../../inputs/MaterialNumberInput.svelte"
 
     $: currentShow = $showsCache[$activeShow!.id]
     $: meta = currentShow.meta
-    let values: any = {}
-    let message: any = {}
-    let metadata: any = {}
-    let templateList: any[] = []
-    let outputShowSettings: any = {}
+    let values: { [key: string]: string } = {}
 
     onMount(getValues)
-    $: if ($activeShow!.id) getValues()
+    $: if ($activeShow!.id || $customMetadata) getValues()
 
     function getValues() {
-        values = { title: "", artist: "", author: "", composer: "", publisher: "", copyright: "", CCLI: "", year: "" }
+        values = getCustomMetadata()
+
+        if (!meta || !Object.keys(meta).length) return
+
+        const defaultKeys = Object.keys(initializeMetadata({}))
         Object.entries(meta).forEach(([key, value]) => {
+            if (!value && defaultKeys.includes(key) && $customMetadata.disabled?.includes(key)) return
             values[key] = value
         })
-
-        metadata = currentShow.metadata || {}
-        message = currentShow.message || {}
-
-        templateList = [
-            { id: null, name: "—" },
-            ...Object.entries($templates)
-                .map(([id, template]: any) => ({ id, name: template.name }))
-                .sort((a, b) => a.name.localeCompare(b.name)),
-        ]
-
-        let outputId = getActiveOutputs($outputs)[0]
-        outputShowSettings = $styles[$outputs[outputId]?.style || ""] || {}
     }
 
-    const changeValue = (e: any, key: string) => {
-        values[key] = e.target.value
+    // duration = quickaccess only
+    // number = quickaccess & metadata
+    // CCLI = quickaccess (metadata) & metadata
+    // others = metadata only
+    const changeValue = (value: string, key: string) => {
+        if (key === "duration") {
+            setQuickAccess(key, value)
+            return
+        }
+
+        values[key] = value
         updateData(values, "meta")
+
+        if (key === "number") setQuickAccess(key, value)
+        else if (key === "CCLI") setQuickAccess(key, value, true)
     }
 
-    function toggleAutoMedia(e: any) {
-        let value = e.target.checked
-        metadata.autoMedia = value
-        updateData(metadata, "metadata")
-    }
+    function setQuickAccess(key: string, value: string | number, asMetadata = false) {
+        let quickAccess = $showsCache[$activeShow!.id].quickAccess || {}
 
-    function toggleOverride(e: any) {
-        let value = e.target.checked
-        metadata.override = value
-        updateData(metadata, "metadata")
+        if (asMetadata) {
+            if (!quickAccess.metadata) quickAccess.metadata = {}
+            quickAccess.metadata[key] = value
+        } else {
+            quickAccess[key] = value
+        }
+
+        showsCache.update((a) => {
+            a[$activeShow!.id].quickAccess = quickAccess
+            return a
+        })
+        shows.update((a) => {
+            a[$activeShow!.id].quickAccess = quickAccess
+            return a
+        })
     }
 
     function updateData(data, key) {
-        let override = "show#" + $activeShow!.id + "_" + key
-        history({ id: "UPDATE", newData: { data, key }, oldData: { id: $activeShow!.id }, location: { page: "show", id: "show_key", override } })
+        let override = "show#" + ($activeShow?.id || "") + "_" + key
+        history({ id: "UPDATE", newData: { data, key }, oldData: { id: $activeShow?.id || "" }, location: { page: "show", id: "show_key", override } })
     }
 
-    let tempHide = false
-    $: if (metadata.override !== undefined) {
-        tempHide = true
-        setTimeout(() => {
-            tempHide = false
-        }, 10)
+    // AUTOFILL
+
+    const autofillValues = {
+        // get only numbers at the start or end
+        number: () => values.number || currentShow.name.match(/^\d+/)?.[0] || currentShow.name.match(/\d+$/)?.[0],
+        // remove numbers
+        title: () => currentShow.name.replace(/[0-9\-.,!:;]/g, "").trim()
     }
 </script>
 
-<Panel>
-    {#if metadata.autoMedia !== true}
-        <div class="gap" style="padding: 10px;">
-            <span class="titles">
-                {#each Object.keys(values) as key}
-                    <p><T id="meta.{key}" /></p>
-                {/each}
-            </span>
-            <span style="flex: 1;display: flex;flex-direction: column;gap: 5px;">
-                {#each Object.entries(values) as [key, value]}
-                    <TextInput {value} on:change={(e) => changeValue(e, key)} />
-                {/each}
-            </span>
-        </div>
-    {/if}
+<section>
+    <div class="context #metadata_tools" style="padding: 10px;">
+        {#each Object.entries(values) as [key, value]}
+            {@const isDefault = !!$dictionary.meta?.[key]}
+            {@const label = isDefault ? translateText(`meta.${key}`) : `<span style="text-transform: capitalize;">${key}</span>`}
+            {@const shouldAutofill = (!value || (key === "number" && !currentShow?.quickAccess?.number)) && (autofillValues[key]?.() || (key === "number" && value))}
+            {@const autofillValue = shouldAutofill ? autofillValues[key]?.() || "" : ""}
+            {@const numberStored = key === "number" && currentShow?.quickAccess?.number}
 
-    <div class="styling">
-        <div>
-            <p title="{$dictionary.meta?.auto_media} (.JPEG images)"><T id="meta.auto_media" /></p>
-            <Checkbox checked={metadata.autoMedia || false} on:change={toggleAutoMedia} />
-        </div>
+            <MaterialTextInput {label} style={numberStored ? "border-bottom: 1px solid var(--secondary);" : ""} {value} autofill={autofillValue} on:change={(e) => changeValue(e.detail, key)} />
+        {/each}
+
+        <!-- not visible as metadata (only in project) -->
+        <MaterialNumberInput label="transition.duration (s)" value={currentShow?.quickAccess?.duration} on:change={(e) => changeValue(e.detail, "duration")} hideWhenZero />
     </div>
 
-    <!-- message -->
-    <h5><T id="meta.message" /></h5>
-    <div class="message">
-        <p style="padding-bottom: 10px;"><T id="meta.message_tip" /></p>
-        <Notes value={message.text || ""} on:change={(e) => updateData({ ...message, text: e.detail }, "message")} lines={2} />
-    </div>
+    <Tip value="tips.display_metadata" style="margin: 0 10px;" bottom={10} />
 
-    <!-- styling -->
-    <h5><T id="edit.style" /></h5>
-    <div class="styling">
-        <!-- I have no idea why, but the ui jump around without resetting this new checkbox -->
-        <div class:tempHide>
-            <p><T id="meta.override_output" /></p>
-            <Checkbox checked={metadata.override || false} on:change={toggleOverride} />
-        </div>
-        {#if metadata.override}
-            <!-- meta display -->
-            <div class="style_data">
-                <p><T id="meta.display_metadata" /></p>
-                <Dropdown
-                    options={metaDisplay}
-                    value={metaDisplay.find((a) => a.id === (metadata.display || "never"))?.name || "—"}
-                    on:click={(e) => {
-                        metadata.display = e.detail.id
-                        updateData(metadata, "metadata")
-                    }}
-                />
-            </div>
-            <!-- meta template -->
-            <div class="style_data">
-                <p><T id="meta.meta_template" /></p>
-                <Dropdown
-                    options={templateList}
-                    value={$templates[metadata.template === undefined ? outputShowSettings.metadataTemplate || "metadata" : metadata.template]?.name || "—"}
-                    on:click={(e) => {
-                        metadata.template = e.detail.id
-                        updateData(metadata, "metadata")
-                    }}
-                />
-            </div>
-            <!-- message display -->
-            <!-- <div class="style_data">
-                <p><T id="meta.display_message" /></p>
-                <Dropdown options={metaDisplay} value={metaDisplay.find((a) => a.id === (message.display || outputShowSettings.displayMessage || "never"))?.name || "—"}  on:click={(e) => updateData()} />
-            </div> -->
-            <!-- message template -->
-            <div class="style_data">
-                <p><T id="meta.message_template" /></p>
-                <Dropdown
-                    options={templateList}
-                    value={$templates[message.template === undefined ? outputShowSettings.messageTemplate || "message" : message.template]?.name || "—"}
-                    on:click={(e) => {
-                        if (currentShow.message) message = currentShow.message
-                        message.template = e.detail.id
-                        updateData(message, "message")
-                    }}
-                />
-            </div>
-        {/if}
-    </div>
-</Panel>
+    <!-- <h5><T id="meta.tags" /></h5>
+    <div class="tags" style="display: flex;flex-direction: column;">
+        <Tags />
+    </div> -->
+</section>
 
 <style>
-    h5 {
-        overflow: visible;
-        text-align: center;
-        padding: 5px;
-        background-color: var(--primary-darkest);
-        color: var(--text);
-        font-size: 0.8em;
-        text-transform: uppercase;
-    }
-
-    .styling div.tempHide {
-        display: none;
-    }
-
-    .message,
-    .styling {
-        padding: 10px;
-    }
-
-    .message :global(div) {
-        display: block !important;
-    }
-
-    .message :global(div.paper) {
-        position: relative;
-        display: block;
-        background: var(--primary-darker);
-    }
-
-    .styling div {
+    section {
         display: flex;
-    }
-    .styling .style_data {
-        padding-top: 5px;
+        flex-direction: column;
     }
 
-    .style_data :global(.dropdownElem) {
-        min-width: 50%;
-        max-width: 50%;
+    section :global(.title) {
+        margin: 5px 0;
     }
 </style>

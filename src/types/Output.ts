@@ -1,3 +1,4 @@
+import type { Cropping, Resolution } from "./Settings"
 import type { OutBackground, OutSlide, OutTransition } from "./Show"
 
 export interface Outputs {
@@ -6,31 +7,42 @@ export interface Outputs {
 
 export interface Output {
     id?: string
-    keyOutput?: string
-    isKeyOutput?: boolean
+    hideFromPreview?: boolean
     stageOutput?: string
     enabled: boolean
     active: boolean
     name: string
     color: string
     bounds: { x: number; y: number; width: number; height: number }
+    boundsLocked?: boolean
+    cropping?: Cropping
+    blending?: { left: number; right: number; rotate: number; opacity: number; centered: boolean; offset: number }
     screen: string | null
     kioskMode?: boolean
     alwaysOnTop?: boolean
     transparent?: boolean
+    allowMainScreen?: boolean // allow custom output bounds
     ndi?: boolean
     ndiData?: any
+    blackmagic?: boolean
+    blackmagicData?: any
+    webrtc?: boolean
+    webrtcData?: any
+    forcedResolution?: Resolution
     invisible?: boolean
     taskbar?: boolean
     style?: string
     show?: any
-    out?: {
-        refresh?: boolean
-        background?: null | OutBackground
-        slide?: null | OutSlide
-        overlays?: string[]
-        transition?: null | OutTransition
-    }
+    out?: OutData
+}
+
+export interface OutData {
+    refresh?: boolean
+    background?: null | OutBackground
+    slide?: null | OutSlide
+    effects?: string[]
+    overlays?: string[]
+    transition?: null | OutTransition
 }
 
 export interface Animation {

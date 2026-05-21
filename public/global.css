@@ -1,6 +1,7 @@
+/* custom CMG Sans */
 @font-face {
     font-family: "CMGSans";
-    src: url("./fonts/CMGSans-Regular.ttf");
+    src: url("./fonts/CMGSans-Medium.ttf");
 }
 @font-face {
     font-family: "CMGSans";
@@ -9,7 +10,7 @@
 }
 @font-face {
     font-family: "CMGSans";
-    src: url("./fonts/CMGSans-Italic.ttf");
+    src: url("./fonts/CMGSans-MediumItalic.ttf");
     font-style: italic;
 }
 @font-face {
@@ -19,9 +20,16 @@
     font-style: italic;
 }
 
+/* flag emojies */
+@font-face {
+    font-family: NotoColorEmojiLimited;
+    unicode-range: U+1F1E6-1F1FF;
+    src: url("https://raw.githack.com/googlefonts/noto-emoji/main/fonts/NotoColorEmoji.ttf");
+}
+
 :root {
-    --primary: #292c36;
-    --primary-lighter: #363945;
+    --primary: #242832;
+    --primary-lighter: #2f3542;
     --primary-darker: #191923;
     --primary-darkest: #12121c;
     --text: #f0f0ff;
@@ -29,19 +37,33 @@
     --secondary: #f0008c;
     --secondary-opacity: rgba(240, 0, 140, 0.5);
     --secondary-text: #f0f0ff;
+    --transparent: #232530;
+
+    --accent: #90caf9;
+
+    --connected: #27a827;
+    --disconnected: #a82727;
+
+    --red: rgb(255 0 0 / 0.25);
 
     --hover: rgb(255 255 255 / 0.05);
     --focus: rgb(255 255 255 / 0.1);
-    /* --active: rgb(230 52 156 / .8); */
 
-    /* --font-family: sans-serif; */
     /* https://css-tricks.com/snippets/css/system-font-stack/ */
-    /* --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; */
     --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
     --font-size: 1em;
 
-    /* --navigation-width: 18vw; */
-    --navigation-width: 300px;
+    --navigation-width: 290px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    user-select: none;
+
+    outline-offset: -4px;
+    outline-color: var(--secondary);
 }
 
 html,
@@ -54,11 +76,10 @@ body {
 body {
     display: flex;
     flex-direction: column;
-    /* background-color: #292c36;
-  background-color: var(--primary); */
-    color: #f0f0ff;
     color: var(--text);
     box-sizing: border-box;
+    /* gradient color background transition not easily possible */
+    /* https://stackoverflow.com/questions/6542212/use-css3-transitions-with-gradient-backgrounds */
     transition: background-color 0.5s;
 
     font-family: var(--font-family);
@@ -67,8 +88,8 @@ body {
 
 /* scroll bar */
 ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
 }
 
 ::-webkit-scrollbar-track,
@@ -78,6 +99,7 @@ body {
 
 ::-webkit-scrollbar-thumb {
     background: rgb(255 255 255 / 0.3);
+    border-radius: 6px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -101,6 +123,11 @@ h6 {
     text-overflow: ellipsis;
     overflow: hidden;
     white-space: nowrap;
+    font-weight: 600;
+}
+
+h1 {
+    font-weight: bold;
 }
 
 p {
@@ -109,75 +136,15 @@ p {
     white-space: nowrap;
 }
 
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-    user-select: none;
+/* CHECKERED */
 
-    outline-offset: -4px;
-    outline-color: var(--secondary);
+.checkered {
+    /* background-color: var(--transparent); */
+    background: repeating-conic-gradient(rgba(70, 70, 80, 0.15) 0% 25%, transparent 0% 50%) 50% / 26px 26px;
 }
 
-/* button {
-  font-family: sans-serif;
-	font-family: system-ui;
-} */
+/* OPTIMIZED MODE */
 
-/* body {
-	color: #333;
-	margin: 0;
-	padding: 8px;
-	box-sizing: border-box;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+.isOptimized {
+    backdrop-filter: none !important;
 }
-
-a {
-	color: rgb(0,100,200);
-	text-decoration: none;
-}
-
-a:hover {
-	text-decoration: underline;
-}
-
-a:visited {
-	color: rgb(0,80,160);
-}
-
-label {
-	display: block;
-}
-
-input, button, select, textarea {
-	font-family: inherit;
-	font-size: inherit;
-	-webkit-padding: 0.4em 0;
-	padding: 0.4em;
-	margin: 0 0 0.5em 0;
-	box-sizing: border-box;
-	border: 1px solid #ccc;
-	border-radius: 2px;
-}
-
-input:disabled {
-	color: #ccc;
-}
-
-button {
-	color: #333;
-	background-color: #f4f4f4;
-	outline: none;
-}
-
-button:disabled {
-	color: #999;
-}
-
-button:not(:disabled):active {
-	background-color: #ddd;
-}
-
-button:focus {
-	border-color: #666;
-} */

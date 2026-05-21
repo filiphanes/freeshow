@@ -1,68 +1,41 @@
 import { get } from "svelte/store"
 import { STAGE } from "../../types/Channels"
-import type { ClientMessage } from "../../types/Socket"
-import { getActiveOutputs } from "../components/helpers/output"
+import type { OutSlide } from "../../types/Show"
+import { runAction } from "../components/actions/actions"
+import { clone, keysToID } from "../components/helpers/array"
+import { getBase64Path } from "../components/helpers/media"
+import { getFirstOutput } from "../components/helpers/output"
+import { getCurrentProjectIndexes, getProjectItems } from "../components/helpers/projectProgress"
+import { getGroupName, getLayoutRef } from "../components/helpers/show"
 import { _show } from "../components/helpers/shows"
-import { events, media, mediaCache, outputs, previewBuffers, showsCache, stageShows, timeFormat, timers, variables } from "../stores"
+import { getCustomStageLabel } from "../components/stage/stage"
+import { actions, activeProject, activeShow, events, groups, media, outputs, previewBuffers, projects, showsCache, stageShows, timeFormat, timers, variables } from "../stores"
 import { connections } from "./../stores"
+import { translateText } from "./language"
 import { send } from "./request"
-import { arrayToObject, eachConnection, filterObjectArray, sendData, timedout } from "./sendData"
-import { clone } from "../components/helpers/array"
+import { arrayToObject, filterObjectArray, sendData, setConnectedState } from "./sendData"
 
-// WIP this should not send to all stage, just connected ids
-export function stageListen() {
-    stageShows.subscribe((data: any) => {
-        data = arrayToObject(filterObjectArray(data, ["disabled", "name", "settings", "items"]).filter((a: any) => a.disabled === false))
-        timedout(STAGE, { channel: "SHOW", data }, () =>
-            eachConnection(STAGE, "SHOW", (connection) => {
-                if (!connection.active) return
-
-                let currentData = data[connection.active]
-                if (!currentData.settings.resolution?.width) currentData.settings.resolution = { width: 1920, height: 1080 }
-                return currentData
-            })
-        )
-    })
-    showsCache.subscribe(() => {
-        sendData(STAGE, { channel: "SLIDES" })
-    })
-
-    outputs.subscribe(() => {
-        sendData(STAGE, { channel: "SLIDES" }, true)
-        // send(STAGE, ["OUTPUTS"], data)
-
-        // sendBackgroundToStage(a)
-    })
-    mediaCache.subscribe(() => {
-        sendData(STAGE, { channel: "SLIDES" }, true)
-        // sendBackgroundToStage(get(outputs))
-    })
-
-    timers.subscribe((a) => {
-        send(STAGE, ["TIMERS"], a)
-    })
-    variables.subscribe((a) => {
-        send(STAGE, ["VARIABLES"], a)
-    })
-    events.subscribe((a) => {
-        send(STAGE, ["EVENTS"], a)
-    })
-
-    timeFormat.subscribe((a) => {
-        send(STAGE, ["DATA"], { timeFormat: a })
-    })
-}
-
-export function sendBackgroundToStage(outputId, updater = get(outputs), returnPath = false) {
-    let currentOutput = updater[outputId]?.out
+// WIP loading different paths, might cause returned base64 to be different than it should if previous thumbnail finishes after
+export async function sendBackgroundToStage(outputId, updater = get(outputs), returnPath = false) {
+    const currentOutput = updater[outputId]?.out
+    const next = await getNextBackground(currentOutput?.slide || null, returnPath)
+    const next2 = await getNextBackground(currentOutput?.slide || null, returnPath, 2)
     let path = currentOutput?.background?.path || ""
-    if (!path) return
+    if (typeof path !== "string") path = ""
 
-    let background = get(mediaCache)[path] || {}
-    let base64path = background.data
-    if (!base64path) return
+    if (returnPath) {
+        return clone({ path, mediaStyle: get(media)[path] || {}, next, next2 })
+    }
 
-    let bg = clone({ path: base64path, mediaStyle: get(media)[path] || {}, next: getNextBackground(currentOutput?.slide) })
+    if (!path && !next.path?.length) {
+        if (!returnPath) send(STAGE, ["BACKGROUND"], { path: "" })
+        return
+    }
+
+    const stageConnections = Object.keys(get(connections).STAGE || {})?.length || 0
+    const base64path = stageConnections > 0 ? await getBase64Path(path) : ""
+
+    const bg = clone({ path: base64path, filePath: path, mediaStyle: get(media)[path] || {}, next, next2 })
 
     if (returnPath) return bg
 
@@ -70,107 +43,188 @@ export function sendBackgroundToStage(outputId, updater = get(outputs), returnPa
     return
 }
 
-function getNextBackground(currentOutputSlide: any) {
+async function getNextBackground(currentOutputSlide: OutSlide | null, returnPath = false, slideOffset = 1) {
     if (!currentOutputSlide?.id) return {}
 
-    let layout: any[] = _show(currentOutputSlide.id).layouts([currentOutputSlide.layout]).ref()[0]
-    if (!layout) return {}
+    const showRef = _show(currentOutputSlide.id).layouts([currentOutputSlide.layout]).ref()[0]
+    if (!showRef) return {}
 
-    let nextLayout = layout[(currentOutputSlide.index || 0) + 1]
+    // GET CORRECT INDEX OFFSET, EXCLUDING DISABLED SLIDES
+    let layoutOffset = currentOutputSlide.index || 0
+    let offsetFromCurrentExcludingDisabled = 0
+    while (offsetFromCurrentExcludingDisabled < slideOffset && layoutOffset <= showRef.length) {
+        layoutOffset++
+        if (!showRef[layoutOffset]?.data?.disabled) offsetFromCurrentExcludingDisabled++
+    }
+    const slideIndex = layoutOffset
+
+    const nextLayout = showRef[slideIndex]
     if (!nextLayout) return {}
 
-    let bgId = nextLayout.data.background || ""
-    let path = _show(currentOutputSlide.id).media([bgId]).get()?.[0]?.path
+    const bgId = nextLayout.data.background || ""
+    let path = _show(currentOutputSlide.id).media([bgId]).get()?.[0]?.path || ""
+    if (typeof path !== "string") path = ""
 
-    let background = get(mediaCache)[path] || {}
-    let base64path = background.data
-    if (!base64path) return {}
+    if (returnPath) return { path, mediaStyle: get(media)[path] || {} }
 
-    return { path: base64path, mediaStyle: get(media)[path] || {} }
+    const base64path = await getBase64Path(path)
+
+    return { path: base64path, filePath: path, mediaStyle: get(media)[path] || {} }
 }
 
-export const receiveSTAGE: any = {
-    SHOWS: (msg: ClientMessage) => {
-        msg.data = turnIntoBoolean(
-            filterObjectArray(get(stageShows), ["disabled", "name", "password"]).filter((a: any) => !a.disabled),
-            "password"
-        )
-        return msg
+export const receiveSTAGE = {
+    LAYOUTS: () => {
+        return keysToID(get(stageShows))
+            .filter((a) => !a.disabled)
+            .map((a) => ({ id: a.id, name: a.name, password: !!a.password }))
     },
-    SHOW: (msg: ClientMessage) => {
-        if (!msg.id) return { id: msg.id, channel: "ERROR", data: "missingID" }
+    LAYOUT: (data: { id: string }, connectionId: string) => {
+        let layout = get(stageShows)[data.id]
+        if (!layout || layout.disabled) return { channel: "ERROR", data: "noShow" }
+        // if (show.password.length && show.password !== data.password) return { channel: "ERROR", data: "wrongPass" }
+        setConnectedState("STAGE", connectionId, "active", data.id)
 
-        let show = get(stageShows)[msg.data.id]
-        if (!show || show.disabled) return { id: msg.id, channel: "ERROR", data: "noShow" }
-        if (show.password.length && show.password !== msg.data.password) return { id: msg.id, channel: "ERROR", data: "wrongPass" }
+        layout = arrayToObject(filterObjectArray(get(stageShows), ["disabled", "name", "settings", "items"]))[data.id]
 
-        // connection successfull
-        connections.update((a) => {
-            if (!a.STAGE) a.STAGE = {}
-            if (!a.STAGE[msg.id!]) a.STAGE[msg.id!] = {}
-            a.STAGE[msg.id!].active = msg.data.id
-            return a
+        // add labels
+        Object.keys(layout.items).map((itemId) => {
+            const item = layout.items[itemId]
+            item.label = getCustomStageLabel(item.type || itemId, item)
         })
-        show = arrayToObject(filterObjectArray(get(stageShows), ["disabled", "name", "settings", "items"]))[msg.data.id]
 
-        // if (show.disabled) return { id: msg.id, channel: "ERROR", data: "noShow" }
-
-        msg.data = show
-        sendData(STAGE, { channel: "SLIDES", data: [] })
+        // if (show.disabled) return { id: connectionId, channel: "ERROR", data: "noShow" }
 
         // initial
-        window.api.send(STAGE, { id: msg.id, channel: "TIMERS", data: get(timers) })
-        window.api.send(STAGE, { id: msg.id, channel: "EVENTS", data: get(events) })
-        window.api.send(STAGE, { id: msg.id, channel: "VARIABLES", data: get(variables) })
+        sendData(STAGE, { channel: "OUT" })
+        sendData(STAGE, { channel: "SHOW_DATA" })
+        window.api.send(STAGE, { id: connectionId, channel: "TIMERS", data: get(timers) })
+        window.api.send(STAGE, { id: connectionId, channel: "EVENTS", data: get(events) })
+        window.api.send(STAGE, { id: connectionId, channel: "VARIABLES", data: get(variables) })
         send(STAGE, ["DATA"], { timeFormat: get(timeFormat) })
-        return msg
+
+        // send media items
+        Object.values(layout.items).forEach(async (item) => {
+            if (item.type === "media" && item.src) {
+                const data = await getBase64Path(item.src)
+                send(STAGE, ["MEDIA"], { path: item.src, value: data })
+            }
+        })
+
+        return layout
     },
-    SLIDES: (msg: ClientMessage) => {
-        // TODO: rework how stage talk works!! (I should send to to each individual connected stage with it's id!)
-        let stageId = msg.data?.id
-        if (!stageId && Object.keys(get(connections).STAGE || {}).length === 1) stageId = (Object.values(get(connections).STAGE)[0] as any).active
-        let show = get(stageShows)[stageId] || {}
-        let outputId = show.settings?.output || getActiveOutputs()[0]
-        let currentOutput: any = get(outputs)[outputId]
-        let out: any = currentOutput?.out?.slide || null
-        msg.data = []
 
-        if (!out) return msg
+    OUT: (data: any, connectionId: string) => {
+        let stageId = data?.id
+        if (!stageId) stageId = get(connections).STAGE?.[connectionId]?.active
+        if (!stageId) return
 
-        // scripture
-        if (out.id === "temp") {
-            msg.data = [{ items: out.tempItems }]
-            return msg
-        }
+        const stageLayout = get(stageShows)[stageId]
+        if (!stageLayout) return
 
-        let ref: any[] = _show(out.id).layouts([out.layout]).ref()[0]
-        let slides: any = _show(out.id).get()?.slides
+        const outputId = stageLayout.settings.output || getFirstOutput()?.id
+        const output = { ...get(outputs)[outputId], id: outputId }
+        if (!output?.out) return
 
-        if (!ref?.[out.index!]) return
-        msg.data = [slides[ref[out.index!].id]]
-
-        let nextIndex = out.index! + 1
-        while (nextIndex < ref.length && ref[nextIndex].data.disabled === true) nextIndex++
-
-        if (nextIndex < ref.length && !ref[nextIndex].data.disabled) msg.data.push(slides[ref[nextIndex].id])
-        else msg.data.push(null)
+        const outSlideId = output.out.slide?.id
+        if (outSlideId) send(STAGE, ["SHOW_DATA"], { id: outSlideId, show: get(showsCache)[outSlideId] })
 
         sendBackgroundToStage(outputId)
-
-        return msg
+        return output
     },
-    REQUEST_STREAM: (msg: ClientMessage) => {
-        let id = msg.data.outputId
-        if (!id) id = getActiveOutputs(get(outputs), true, true, true)[0]
-        if (msg.data.alpha && get(outputs)[id].keyOutput) id = get(outputs)[id].keyOutput
+    SHOW_DATA: (_data: any, connectionId: string) => {
+        const stageId = get(connections).STAGE?.[connectionId]?.active
+        if (!stageId) return
+
+        const stageLayout = get(stageShows)[stageId]
+        if (!stageLayout) return
+
+        const outputId = stageLayout.settings.output || getFirstOutput()?.id
+        const outSlideId = get(outputs)[outputId]?.out?.slide?.id || ""
+        const show = get(showsCache)[outSlideId]
+        if (!show) return
+
+        // send media items
+        Object.values(show.media || {}).forEach(async (media) => {
+            const data = await getBase64Path(media.path || "")
+            send(STAGE, ["MEDIA"], { path: media.path, value: data })
+        })
+
+        return { id: outSlideId, show }
+    },
+
+    REQUEST_PROGRESS: (data: any) => {
+        let outputId = data.outputId
+        if (!outputId) outputId = getFirstOutput()?.id
+        if (!outputId) return
+
+        const currentSlideOut = get(outputs)[outputId]?.out?.slide || null
+        const currentShowId = currentSlideOut?.id || ""
+        const currentShowSlide = currentSlideOut?.index ?? -1
+        const currentLayoutRef = getLayoutRef(currentShowId)
+        const currentShowSlides = _show(currentShowId).get("slides") || {}
+        const slidesLength = currentLayoutRef.length || 0
+
+        // get custom group names
+        const layoutGroups = currentLayoutRef.map((a) => {
+            const ref = a.parent || a
+            const slide = currentShowSlides[ref.id]
+            if (!slide) return { name: "—" }
+
+            if (a.data.disabled || slide.group?.startsWith("~")) return { hide: true }
+
+            let group = slide.group || "—"
+            if (slide.globalGroup && get(groups)[slide.globalGroup]) {
+                group = get(groups)[slide.globalGroup].default ? translateText("groups." + get(groups)[slide.globalGroup].name) : get(groups)[slide.globalGroup].name
+            }
+
+            if (typeof group !== "string") group = ""
+            const name = getGroupName({ show: _show(currentShowId).get(), showId: currentShowId }, ref.id, group, ref.layoutIndex)?.replace(/ *\([^)]*\) */g, "")
+            const oneLetterName = getGroupName({ show: _show(currentShowId).get(), showId: currentShowId }, ref.id, group[0].toUpperCase(), ref.layoutIndex)?.replace(/ *\([^)]*\) */g, "")
+            return { name: name || "—", oneLetterName: (oneLetterName || "—").replace(" ", ""), index: ref.layoutIndex, child: a.type === "child" ? (currentLayoutRef[ref.layoutIndex]?.children || []).findIndex((id) => id === a.id) + 1 : 0 }
+        })
+
+        // Project progress
+
+        const currentProjectItems = get(projects)[get(activeProject) || ""]?.shows || []
+        const activeProjectItem = get(activeShow)
+        const activeProjectItemIndex = typeof activeProjectItem?.index === "number" ? activeProjectItem.index : -1
+
+        const currentOut = get(outputs)[outputId]?.out || {}
+        const currentProjectIndexes = getCurrentProjectIndexes(currentProjectItems, currentOut, activeProjectItemIndex)
+        const projectItems = getProjectItems(currentProjectItems, get(showsCache))
+
+        data.progress = { currentShowSlide, slidesLength, layoutGroups, projectItems, currentProjectIndexes }
+
+        return data
+    },
+    REQUEST_STREAM: (data: any) => {
+        let id = data.outputId
+        if (!id) id = getFirstOutput()?.id
 
         if (!id) return
 
-        msg.data.stream = get(previewBuffers)[id]
+        data.stream = get(previewBuffers)[id]
 
-        return msg
+        return data
     },
-    // TODO: send data!
+
+    RUN_ACTION: (a: { id: string }) => {
+        runAction(get(actions)[a.id])
+    }
+
+    // REQUEST_VIDEO_DATA: (data: any) => {
+    //     if (!data) data = {}
+
+    //     // WIP don't know the outputId
+    //     // let id = data.outputId
+    //     let outputId = getFirstOutput()?.id
+    //     if (!outputId) return
+
+    //     data.data = get(videosData)[outputId]
+    //     data.time = get(videosTime)[outputId]
+
+    //     return data
+    // },
     // case "SHOW":
     //   data = getStageShow(message.data)
     //   break
@@ -183,11 +237,4 @@ export const receiveSTAGE: any = {
     // case "OVERLAYS":
     //   data = getOutOverlays()
     //   break
-}
-
-function turnIntoBoolean(array: any[], key: string) {
-    return array.map((a) => {
-        a[key] = a[key].length ? true : false
-        return a
-    })
 }

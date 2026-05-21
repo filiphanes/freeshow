@@ -1,131 +1,59 @@
 <script lang="ts">
-    import { alertUpdates, autoOutput, autosave, labelsDisabled, special, timeFormat } from "../../../stores"
-    import { setLanguage } from "../../../utils/language"
-    import Icon from "../../helpers/Icon.svelte"
-    import T from "../../helpers/T.svelte"
-    import Button from "../../inputs/Button.svelte"
-    import Checkbox from "../../inputs/Checkbox.svelte"
-    import CombinedInput from "../../inputs/CombinedInput.svelte"
-    import Dropdown from "../../inputs/Dropdown.svelte"
-    import LocaleSwitcher from "../LocaleSwitcher.svelte"
+    import { dictionary, fullColors, groups, labelsDisabled, language, special, timeFormat } from "../../../stores"
+    import { getLanguageList, setLanguage, translateText } from "../../../utils/language"
+    import { sortByName } from "../../helpers/array"
+    import Title from "../../input/Title.svelte"
+    import MaterialDropdown from "../../inputs/MaterialDropdown.svelte"
+    import MaterialPopupButton from "../../inputs/MaterialPopupButton.svelte"
+    import MaterialToggleSwitch from "../../inputs/MaterialToggleSwitch.svelte"
 
-    const inputs: any = {
-        timeFormat: (e: any) => timeFormat.set(e.target.checked ? "24" : "12"),
-        updates: (e: any) => alertUpdates.set(e.target.checked),
-        labels: (e: any) => labelsDisabled.set(e.target.checked),
-        autoOutput: (e: any) => autoOutput.set(e.target.checked),
-        hideCursor: (e: any) => updateSpecial(e.target.checked, "hideCursor"),
-    }
-
-    const autosaveList: any = [
-        { id: "never", name: "$:settings.never:$" },
-        { id: "2min", name: "2 $:settings.minutes:$" },
-        { id: "5min", name: "5 $:settings.minutes:$" },
-        { id: "10min", name: "10 $:settings.minutes:$" },
-        { id: "15min", name: "15 $:settings.minutes:$" },
-        { id: "30min", name: "30 $:settings.minutes:$" },
-    ]
-
-    function updateSpecial(value, key) {
+    function updateSpecial(value: any, key: string, allowEmpty = false) {
         special.update((a) => {
-            if (!value) delete a[key]
+            if (!allowEmpty && !value) delete a[key]
             else a[key] = value
 
             return a
         })
     }
 
-    // const projectNames: any[] = ["date", "today", "sunday", "week", "custom", "blank"].map((id) => ({ name: "$:projectName.${" + id + "}:$", id }))
-
-    function reset() {
-        setLanguage(null)
-        timeFormat.set("24")
-        alertUpdates.set(true)
-        autoOutput.set(false)
-        labelsDisabled.set(false)
-
-        special.update((a) => {
-            delete a.hideCursor
-            return a
-        })
-    }
+    /////
 
     // WIP set calendar starting day
     // WIP change date format (DD.MM.YYYY, YYYY-MM-DD)
+
+    $: groupsString = updateGroups($groups, $dictionary)
+    function updateGroups(groups: any, _updater: any) {
+        const groupsList: { label: string; color: string }[] = []
+        Object.values(groups).forEach((a: any) => {
+            groupsList.push({ label: a.default ? translateText(`groups.${a.name}`) || a.name : a.name, color: a.color })
+        })
+
+        const strings: string[] = []
+        sortByName(groupsList, "label").forEach((a) => {
+            if (a.label) strings.push(`<span style="color: ${a.color};">${a.label}</span>`)
+        })
+
+        return strings.join(`<span style="opacity: 0.4;"> | </span>`)
+    }
 </script>
 
-<CombinedInput>
-    <p><T id="settings.language" /></p>
-    <LocaleSwitcher />
-</CombinedInput>
-<CombinedInput>
-    <p><T id="settings.autosave" /></p>
-    <Dropdown options={autosaveList} value={autosaveList.find((a) => a.id === ($autosave || "never"))?.name || ""} on:click={(e) => autosave.set(e.detail.id)} />
-</CombinedInput>
-<CombinedInput>
-    <p><T id="settings.use24hClock" /></p>
-    <div class="alignRight">
-        <Checkbox checked={$timeFormat === "24"} on:change={inputs.timeFormat} />
-    </div>
-</CombinedInput>
-<CombinedInput>
-    <p><T id="settings.alert_updates" /></p>
-    <div class="alignRight">
-        <Checkbox checked={$alertUpdates} on:change={inputs.updates} />
-    </div>
-</CombinedInput>
-<CombinedInput>
-    <p><T id="settings.disable_labels" /></p>
-    <div class="alignRight">
-        <Checkbox checked={$labelsDisabled} on:change={inputs.labels} />
-    </div>
-</CombinedInput>
-<CombinedInput>
-    <p><T id="settings.auto_output" /></p>
-    <div class="alignRight">
-        <Checkbox checked={$autoOutput} on:change={inputs.autoOutput} />
-    </div>
-</CombinedInput>
-<CombinedInput>
-    <p><T id="settings.hide_cursor_in_output" /></p>
-    <div class="alignRight">
-        <Checkbox checked={$special.hideCursor} on:change={inputs.hideCursor} />
-    </div>
-</CombinedInput>
+<MaterialDropdown label="settings.language" value={$language} options={getLanguageList()} on:change={(e) => setLanguage(e.detail)} flags />
+<MaterialToggleSwitch label="settings.use24hClock" checked={$timeFormat === "24"} on:change={(e) => timeFormat.set(e.detail ? "24" : "12")} />
+<MaterialToggleSwitch label="settings.disable_labels" checked={$labelsDisabled} defaultValue={false} on:change={(e) => labelsDisabled.set(e.detail)} />
+<MaterialToggleSwitch label="settings.full_colors" checked={$fullColors} defaultValue={false} on:change={(e) => fullColors.set(e.detail)} />
 
-<!-- <hr /> -->
-<!-- <div>
-  <p><T id="settings.default_project_name" /></p>
-  <Dropdown
-    options={projectNames}
-    value={$defaultProjectName}
-    on:click={(e) => {
-      // history?
-      defaultProjectName.set(e.detail.id)
-    }}
-  />
-</div> -->
+<!-- SLIDES -->
 
-<div class="filler" />
-<div class="bottom">
-    <Button style="width: 100%;" on:click={reset} center>
-        <Icon id="reset" right />
-        <T id="actions.reset" />
-    </Button>
-</div>
+<!-- info.slides -->
+<Title label="tools.slide" icon="slide" />
 
-<style>
-    .filler {
-        height: 48px;
-    }
-    .bottom {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        background-color: var(--primary-darkest);
+<MaterialPopupButton label={translateText("popup.manage_groups", $dictionary)} name={groupsString} value={groupsString ? "." : ""} popupId="manage_groups" icon="groups" />
+<MaterialToggleSwitch label="settings.transparent_slides" checked={$special.transparentSlides} defaultValue={false} on:change={(e) => updateSpecial(e.detail, "transparentSlides")} />
 
-        display: flex;
-        flex-direction: column;
-    }
-</style>
+<!-- shortcuts: -->
+<MaterialToggleSwitch label="settings.next_item_on_last_slide" checked={$special.nextItemOnLastSlide !== false} defaultValue={true} on:change={(e) => updateSpecial(e.detail, "nextItemOnLastSlide", true)} />
+<MaterialToggleSwitch label="settings.slide_number_keys" checked={$special.numberKeys} defaultValue={false} on:change={(e) => updateSpecial(e.detail, "numberKeys")} />
+<MaterialToggleSwitch label="settings.auto_shortcut_first_letter" checked={$special.autoLetterShortcut} defaultValue={false} on:change={(e) => updateSpecial(e.detail, "autoLetterShortcut")} />
+
+<!-- when disabled: no ./F2 to clear, F5 clears slide timer instead of next slide, no PageUp/PageDown/Home/End for slide navigation -->
+<!-- <Checkbox checked={$special.disablePresenterControllerKeys} on:change={(e) => updateSpecial(e.target.checked, "disablePresenterControllerKeys")} /> -->

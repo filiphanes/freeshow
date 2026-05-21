@@ -1,0 +1,116 @@
+import type { Bible } from "json-bible/lib/Bible"
+import path from "path"
+import type { Main } from "../../types/IPC/Main"
+import { ToMain } from "../../types/IPC/ToMain"
+import type { SaveData } from "../../types/Save"
+import { currentlyDeletedShows } from "../cloud/drive"
+import { startBackup } from "../data/backup"
+import { defaultSettings, defaultSyncedSettings } from "../data/defaults"
+import { _store, safeStoreSet } from "../data/store"
+import { sendMain, sendToMain } from "../IPC/main"
+import { deleteFile, doesPathExist, getDataFolderPath, parseShow, readFile, writeFile } from "../utils/files"
+import { checkIfMatching, clone, wait } from "../utils/helpers"
+import { renameShows } from "../utils/shows"
+
+let isSaving = false
+export async function save(data: SaveData) {
+    if (isSaving) return
+    isSaving = true
+
+    // auto backup right after startup does not need to write again
+    const isAutoBackupOnly = !!data.customTriggers?.backup && !!data.customTriggers?.isAutoBackup && !data.customTriggers?.autosave && !data.closeWhenFinished
+    if (isAutoBackupOnly) {
+        startBackup({ customTriggers: data.customTriggers })
+        sendToMain(ToMain.SAVE2, { closeWhenFinished: false, customTriggers: data.customTriggers })
+        isSaving = false
+        return
+    }
+
+    const reset = !!data.customTriggers?.reset
+    if (reset) {
+        data.SETTINGS = clone(defaultSettings)
+        data.SYNCED_SETTINGS = clone(defaultSyncedSettings)
+    }
+
+    // save to files
+    for (const entry of Object.entries(_store)) {
+        await storeData(entry as any)
+    }
+    async function storeData([key, store]: [keyof typeof _store, any]) {
+        const newData = (data as any)[key]
+        if (!newData || !isValidJSON(newData)) return
+
+        let currentData
+        try {
+            currentData = store.store
+        } catch {
+            currentData = {}
+        }
+        if (checkIfMatching(currentData, newData)) return
+
+        await safeStoreSet(store, newData, key)
+
+        if (reset) sendMain(key as Main, newData)
+    }
+
+    // scriptures
+    const scriptureFolderPath = getDataFolderPath("scriptures")
+    if (data.scripturesCache) Object.entries(data.scripturesCache).forEach(saveScripture)
+    function saveScripture([id, value]: [string, Bible]) {
+        if (!value || !isValidJSON(value)) return
+        const filePath: string = path.join(scriptureFolderPath, value.name + ".fsb")
+        writeFile(filePath, JSON.stringify([id, value]), id)
+    }
+
+    const showsPath = getDataFolderPath("shows")
+    // rename shows
+    if (data.renamedShows) {
+        const renamedShows = data.renamedShows.filter(({ id }: { id: string }) => !data.deletedShows?.find((a) => a.id === id))
+        await renameShows(renamedShows, showsPath)
+    }
+
+    // shows
+    if (data.showsCache) Object.entries(data.showsCache).forEach(saveShow)
+    function saveShow([id, value]: [string, any]) {
+        if (!value || !isValidJSON(value)) return
+        const filePath: string = path.join(showsPath, String(value.name || id) + ".show")
+        writeFile(filePath, JSON.stringify([id, value]), id)
+    }
+
+    // delete shows
+    if (data.deletedShows) data.deletedShows.forEach(deleteShow)
+    function deleteShow({ name, id }: { name: string; id: string }) {
+        if (!id || data.showsCache?.[id]) return
+
+        const filePath: string = path.join(showsPath, (name || id) + ".show")
+        if (!doesPathExist(filePath)) return
+
+        // load file to double check the ID (as a new show with the same name might have been created)
+        const jsonData = readFile(filePath) || "{}"
+        const show = parseShow(jsonData)
+        if (show?.[0] !== id) return
+
+        deleteFile(filePath)
+
+        // update cloud
+        currentlyDeletedShows.push(id)
+    }
+
+    // SAVED
+
+    if (data.customTriggers?.backup) startBackup({ customTriggers: data.customTriggers })
+
+    if (data.closeWhenFinished) await wait(300) // make sure files are written before closing
+    if (!reset) sendToMain(ToMain.SAVE2, { closeWhenFinished: data.closeWhenFinished, customTriggers: data.customTriggers })
+
+    isSaving = false
+}
+
+function isValidJSON(object: any) {
+    try {
+        JSON.stringify(object)
+        return true
+    } catch {
+        return false
+    }
+}

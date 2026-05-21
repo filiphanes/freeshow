@@ -1,46 +1,67 @@
 <script lang="ts">
-    import { dictionary, overlays } from "../../../stores"
+    import type { Output } from "../../../../types/Output"
+    import { effects, outLocked, overlays } from "../../../stores"
     import Icon from "../../helpers/Icon.svelte"
     import { setOutput } from "../../helpers/output"
     import Button from "../../inputs/Button.svelte"
 
-    export let currentOutput: any
+    export let currentOutput: Output
 
     // $: if (!currentOutput?.out?.overlays?.length) {
     //   // get all overlays
-    //   let outs = getActiveOutputs().map((id) => $outputs[id])
+    //   let outs = getAllActiveOutputs()
     //   currentOutput = outs.find((output) => output.out?.overlays)
     // }
 
-    $: activeOverlays = currentOutput?.out?.overlays?.map((id: any) => ({ id, ...$overlays[id] }))
+    $: activeEffects = currentOutput?.out?.effects?.map((id) => ({ id, ...$effects[id] })) || []
+    $: activeOverlays = currentOutput?.out?.overlays?.map((id) => ({ id, ...$overlays[id] })) || []
 
-    function removeOverlay(id: string) {
+    function removeEffect(id: string) {
+        if ($outLocked || !currentOutput.out?.effects) return
+
         setOutput(
-            "overlays",
-            currentOutput.out.overlays.filter((a: any) => a !== id)
+            "effects",
+            currentOutput.out.effects.filter((a) => a !== id)
         )
     }
 
-    function setLocked(id: string, setLocked: boolean) {
-        overlays.update((a) => {
-            a[id].locked = setLocked
-            return a
-        })
+    function removeOverlay(id: string) {
+        if ($outLocked || !currentOutput.out?.overlays) return
+
+        setOutput(
+            "overlays",
+            currentOutput.out.overlays.filter((a) => a !== id)
+        )
     }
+
+    // function setLocked(id: string, setLocked: boolean) {
+    //     overlays.update((a) => {
+    //         a[id].locked = setLocked
+    //         return a
+    //     })
+    // }
 </script>
 
-{#if currentOutput?.out?.overlays?.length}
+{#if currentOutput?.out?.overlays?.length || currentOutput?.out?.effects?.length}
     <span class="name" style="justify-content: space-between;">
+        {#each activeEffects as effect}
+            <div class="overlay">
+                <Button style="flex: 1;" disabled={$outLocked} on:click={() => removeEffect(effect.id)} center red>
+                    <Icon id="effects" right />
+                    <p>{effect.name || "—"}</p>
+                </Button>
+            </div>
+        {/each}
         {#each activeOverlays as overlay}
-            {@const locked = $overlays[overlay.id]?.locked}
+            <!-- {@const locked = $overlays[overlay.id]?.locked} -->
             <div class="overlay">
                 <!-- disabled={locked} red={!locked} -->
-                <Button style="flex: 1;" on:click={() => removeOverlay(overlay.id)} center red>
+                <Button style="flex: 1;" disabled={$outLocked} on:click={() => removeOverlay(overlay.id)} center red>
                     <p>{overlay.name || "—"}</p>
                 </Button>
-                <Button on:click={() => setLocked(overlay.id, !locked)} title={locked ? $dictionary.preview?.unlock : $dictionary.preview?.lock} red={locked}>
+                <!-- <Button on:click={() => setLocked(overlay.id, !locked)} title={locked ? $dictionary.preview?.unlock : $dictionary.preview?.lock} red={locked}>
                     <Icon id={locked ? "locked" : "unlocked"} />
-                </Button>
+                </Button> -->
             </div>
         {/each}
     </span>
@@ -51,7 +72,7 @@
         display: flex;
         flex-direction: column;
         justify-content: center;
-        max-height: 50px;
+        max-height: 60px;
         overflow-y: auto;
     }
 

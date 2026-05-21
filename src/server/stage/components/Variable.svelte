@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { variables } from "../store"
+    import { variables } from "../util/stores"
 
     export let id: string = ""
     export let style: string = ""
@@ -7,7 +7,7 @@
     $: variable = $variables[id] || {}
 </script>
 
-<div class="align" {style}>
+<div class="align autoFontSize" {style}>
     <div class="line">
         {#if variable.type === "number"}
             {Number(variable.number || 0)}

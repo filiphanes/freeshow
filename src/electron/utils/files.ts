@@ -2,167 +2,402 @@
 // Functions to interact with local files
 
 import { app, dialog, shell } from "electron"
+import type { ExifData } from "exif"
 import { ExifImage } from "exif"
-import fs from "fs"
-import { Stats } from "original-fs"
+import fs, { type Stats } from "fs"
 import path, { join, parse } from "path"
-import { FILE_INFO, MAIN, OPEN_FOLDER, READ_FOLDER, SHOW, STORE } from "../../types/Channels"
-import { OPEN_FILE, READ_EXIF } from "./../../types/Channels"
-import { mainWindow, toApp } from "./../index"
-import { getAllShows, trimShow } from "./responses"
-import { stores } from "./store"
 import { uid } from "uid"
+import upath from "upath"
+import { fileURLToPath } from "url"
+import { OUTPUT } from "../../types/Channels"
+import { Main } from "../../types/IPC/Main"
+import { ToMain } from "../../types/IPC/ToMain"
+import type { FileFolder, MainFilePaths, Subtitle } from "../../types/Main"
+import type { Project } from "../../types/Projects"
+import type { Item, Show, TrimmedShows } from "../../types/Show"
+import { imageExtensions, mimeTypes, videoExtensions } from "../data/media"
+import { _store, appDataPath, config, getStore, setStore, setStoreValue } from "../data/store"
+import { createThumbnail, doesMediaExist, filePathHashCode } from "../data/thumbnails"
+import { sendMain, sendToMain } from "../IPC/main"
+import { OutputHelper } from "../output/OutputHelper"
+import { mainWindow, setAutoProfile, toApp } from "./../index"
+import { getAllShows, trimShow } from "./shows"
 
 function actionComplete(err: Error | null, actionFailedMessage: string) {
     if (err) console.error(actionFailedMessage + ":", err)
 }
 
+function isPermissionDeniedError(err: unknown): boolean {
+    // the user has not granted permission to access the file/folder, or the file/folder is locked by another process
+    if (!err || typeof err !== "object") return false
+    const code = (err as NodeJS.ErrnoException).code
+    return code === "EPERM" || code === "EACCES"
+}
+
 // GENERAL
 
-export function doesPathExist(path: string): boolean {
+export function doesPathExist(filePath: string): boolean {
+    if (!filePath) return false
+
     try {
-        return fs.existsSync(path)
-    } catch (err: any) {
-        actionComplete(err, "Error when checking path")
+        return fs.existsSync(filePath)
+    } catch (err) {
+        actionComplete(err as Error, "Error when checking path")
     }
 
     return false
 }
 
-export function readFile(path: string, encoding: BufferEncoding = "utf8"): string {
+export function readFile(filePath: string, encoding: BufferEncoding = "utf8", disableLog = false): string {
     try {
-        return fs.readFileSync(path, encoding)
-    } catch (err: any) {
-        actionComplete(err, "Error when reading file")
+        const buffer = fs.readFileSync(filePath)
+        return safeBufferToString(buffer, encoding, filePath)
+    } catch (err) {
+        if (!disableLog) actionComplete(err as Error, "Error when reading file")
         return ""
     }
 }
 
-export function readFolder(path: string): string[] {
+export function readFolder(filePath: string): string[] {
     try {
-        return fs.readdirSync(path)
-    } catch (err: any) {
-        actionComplete(err, "Error when reading folder")
+        return fs.readdirSync(filePath)
+    } catch (err) {
+        if (isPermissionDeniedError(err)) return []
+        actionComplete(err as Error, "Error when reading folder")
         return []
     }
 }
 
-export function writeFile(path: string, content: string | NodeJS.ArrayBufferView, id: string = "") {
-    // don't know if it's necessary to check the file
-    if (fileContentMatches(content, path)) return
+export function deleteFolder(filePath: string) {
+    if (!filePath) return
+    try {
+        fs.rmSync(filePath, { recursive: true })
+    } catch (err) {
+        actionComplete(err as Error, "Error when deleting folder")
+    }
+}
 
-    fs.writeFile(path, content, (err) => {
-        actionComplete(err, "Error when writing to file")
-        if (err && id) toApp(SHOW, { error: "no_write", err, id })
+export function deleteFolderAsync(filePath: string) {
+    return new Promise<void>((resolve) => {
+        fs.rm(filePath, { recursive: true, force: true }, (err) => {
+            if (err) actionComplete(err, "Error when deleting folder")
+            resolve()
+        })
     })
 }
 
-export function deleteFile(path: string) {
-    fs.unlink(path, (err) => actionComplete(err, "Could not delete file"))
+export function doesPathExistAsync(filePath: string): Promise<boolean> {
+    return new Promise((resolve) => {
+        fs.access(filePath, (err) => {
+            if (err) resolve(false)
+            resolve(true)
+        })
+    })
 }
 
-export function renameFile(p: string, oldName: string, newName: string) {
-    let oldPath = path.join(p, oldName)
-    let newPath = path.join(p, newName)
-
-    fs.rename(oldPath, newPath, (err) => actionComplete(err, "Could not rename file"))
+export function readFileAsync(filePath: string, encoding: BufferEncoding = "utf8"): Promise<string> {
+    return new Promise((resolve) =>
+        fs.readFile(filePath, (err, buffer) => {
+            if (err) console.error(err)
+            resolve(err ? "" : safeBufferToString(buffer, encoding, filePath))
+        })
+    )
 }
 
-export function getFileStats(p: string) {
+const MAX_NODE_STRING_LENGTH = 0x1fffffe8
+function safeBufferToString(buffer: Buffer, encoding: BufferEncoding, filePath: string): string {
+    if (!buffer?.length) return ""
+
+    // Guard against Node's maximum string length to avoid runtime RangeError.
+    if (buffer.length > MAX_NODE_STRING_LENGTH) {
+        console.error(`Skipped string conversion for oversized file: ${filePath}`)
+        return ""
+    }
+
     try {
-        const stat: Stats = fs.statSync(p)
-        return { path: p, stat, extension: path.extname(p).substring(1), folder: stat.isDirectory() }
+        return buffer.toString(encoding)
     } catch (err) {
-        actionComplete(err, "Error when getting file stats")
+        console.error(err, `Error when converting file buffer to string (${filePath})`)
+        return ""
+    }
+}
+
+export function readFileBufferAsync(filePath: string): Promise<Buffer> {
+    return new Promise((resolve) =>
+        fs.readFile(filePath, (err, buffer) => {
+            if (err) console.error(err)
+            resolve(err ? Buffer.of(0) : buffer)
+        })
+    )
+}
+
+export function readFolderAsync(filePath: string): Promise<string[]> {
+    return new Promise((resolve) =>
+        fs.readdir(filePath, (err, files) => {
+            if (err && !isPermissionDeniedError(err)) console.error(err)
+            resolve(err ? [] : files)
+        })
+    )
+}
+
+async function readFolderWithTypesAsync(folderPath: string): Promise<fs.Dirent[]> {
+    return new Promise((resolve, reject) => {
+        fs.readdir(folderPath, { withFileTypes: true }, (err, entries) => {
+            if (err) {
+                if (isPermissionDeniedError(err)) return resolve([])
+                return reject(err)
+            } else resolve(entries)
+        })
+    })
+}
+
+export async function writeFileAsync(filePath: string, content: string | NodeJS.ArrayBufferView, id = ""): Promise<boolean> {
+    // don't know if it's necessary to check the file
+    if (await fileContentMatchesAsync(content, filePath)) return false
+
+    return new Promise((resolve) => {
+        fs.writeFile(filePath, content, (err) => {
+            actionComplete(err, "Error when writing to file")
+            if (err && id) sendToMain(ToMain.SHOW2, { error: "no_write", err, id })
+            resolve(!err)
+        })
+    })
+}
+
+export function writeFile(filePath: string, content: string | NodeJS.ArrayBufferView, id = "") {
+    // don't know if it's necessary to check the file
+    if (fileContentMatches(content, filePath)) return false
+
+    try {
+        fs.writeFileSync(filePath, content)
+        return true
+    } catch (err) {
+        actionComplete(err as Error, "Error when writing to file")
+        if (id) sendToMain(ToMain.SHOW2, { error: "no_write", err: err as Error, id })
+        return false
+    }
+}
+
+export function deleteFile(filePath: string) {
+    try {
+        fs.unlinkSync(filePath)
+        return true
+    } catch (err) {
+        actionComplete(err as Error, "Could not delete file")
+        return false
+    }
+}
+
+export function deleteFileAsync(filePath: string) {
+    return new Promise<boolean>((resolve) => {
+        fs.unlink(filePath, (err) => {
+            actionComplete(err, "Could not delete file")
+            resolve(!err)
+        })
+    })
+}
+
+export function copyFileAsync(sourcePath: string, destPath: string) {
+    return new Promise<boolean>((resolve) => {
+        fs.copyFile(sourcePath, destPath, (err) => {
+            actionComplete(err, "Could not copy file")
+            resolve(!err)
+        })
+    })
+}
+
+export function moveFileAsync(oldPath: string, newPath: string) {
+    return new Promise<boolean>((resolve) => {
+        fs.rename(oldPath, newPath, async (err) => {
+            if (err && err.code === "EXDEV") {
+                // cross-device link not permitted, fallback to copy + delete
+                try {
+                    await copyFileAsync(oldPath, newPath)
+                    await deleteFileAsync(oldPath)
+                    resolve(true)
+                } catch (copyErr) {
+                    actionComplete(copyErr as Error, "Could not copy file for cross-device move")
+                    resolve(false)
+                }
+            } else {
+                actionComplete(err, "Could not rename file")
+                resolve(!err)
+            }
+        })
+    })
+}
+
+export async function renameFileAsync(filePath: string, oldName: string, newName: string) {
+    const oldPath = path.join(filePath, oldName)
+    const newPath = path.join(filePath, newName)
+
+    return await moveFileAsync(oldPath, newPath)
+}
+
+export function getFileStats(filePath: string, disableLog = false) {
+    try {
+        const stat: Stats = fs.statSync(filePath)
+        return { path: filePath, stat, extension: path.extname(filePath).substring(1).toLowerCase(), folder: stat.isDirectory() }
+    } catch (err) {
+        if (!disableLog) actionComplete(err as Error, "Error when getting file stats")
         return null
     }
 }
 
+export function getFileStatsAsync(filePath: string): Promise<null | Stats> {
+    return new Promise((resolve) => {
+        if (!filePath) return resolve(null)
+        fs.stat(filePath, (err, stats) => {
+            if (err) return resolve(null)
+            resolve(stats)
+        })
+    })
+}
+
+export function makeDir(folderPath: string) {
+    try {
+        fs.mkdirSync(folderPath, { recursive: true })
+    } catch (err) {
+        console.error("Could not create a directory to path: " + folderPath + "! " + String(err))
+        sendToMain(ToMain.ALERT, "Error: Could not create folder at: " + folderPath + "!")
+    }
+}
+
+export function getValidFileName(filePath: string) {
+    return filePath
+        .replace(/[/\\?%*:|"<>]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+}
+
 // SELECT DIALOGS
 
-export function selectFilesDialog(title: string = "", filters: any, multiple: boolean = true): string[] {
-    let options: any = { properties: ["openFile"], filters: [{ name: filters.name, extensions: filters.extensions }] }
-    if (title) options.title = title
-    if (multiple) options.properties.push("multiSelections")
+export function selectFilesDialog(title = "", filters: Electron.FileFilter, multiple = true, initialPath = ""): string[] {
+    // crashes if empty in electron v37
+    if (!filters.extensions?.length) filters.extensions = ["*"]
 
-    let files: string[] = dialog.showOpenDialogSync(mainWindow!, options) || []
+    const options: Electron.OpenDialogSyncOptions = { properties: ["openFile"], filters: [{ name: filters.name, extensions: filters.extensions }] }
+    if (title) options.title = title
+    if (multiple) options.properties!.push("multiSelections")
+    if (initialPath) options.defaultPath = initialPath
+
+    const files: string[] = dialog.showOpenDialogSync(mainWindow!, options) || []
     return files
 }
 
-export function selectFolderDialog(title: string = "", defaultPath: string = ""): string {
-    let options: any = { properties: ["openDirectory"] }
+export function selectFolderDialog(title = "", defaultPath = ""): string {
+    const options: Electron.OpenDialogSyncOptions = { properties: ["openDirectory"] }
     if (title) options.title = title
     if (defaultPath) options.defaultPath = defaultPath
 
-    let path: string[] = dialog.showOpenDialogSync(mainWindow!, options) || [""]
-    return path[0]
+    const folderPaths: string[] = dialog.showOpenDialogSync(mainWindow!, options) || [""]
+    return folderPaths[0]
 }
 
 // DATA FOLDERS
 
-export function openSystemFolder(path: string) {
-    if (!doesPathExist(path)) return toApp(MAIN, { channel: "ALERT", data: "This does not exist!" })
+export function openInSystem(filePath: string, openFolder = false) {
+    if (!doesPathExist(filePath)) return sendToMain(ToMain.ALERT, "This does not exist!")
 
-    shell.openPath(path)
-}
-
-const appFolderName = "FreeShow"
-export function getDocumentsFolder(p: any = null, folderName: string = "Shows"): string {
-    let folderPath = [app.getPath("documents"), appFolderName]
-    if (folderName) folderPath.push(folderName)
-    if (!p) p = path.resolve(...folderPath)
-    if (!doesPathExist(p)) p = fs.mkdirSync(p, { recursive: true })
-
-    return p
-}
-
-export function checkShowsFolder(path: string): string {
-    if (!path) {
-        path = getDocumentsFolder()
-        toApp(MAIN, { channel: "SHOWS_PATH", data: path })
-        return path
-    }
-
-    if (doesPathExist(path)) return path
-
-    return fs.mkdirSync(path, { recursive: true }) || path
+    if (openFolder) shell.openPath(filePath).catch((err) => console.error("Could not open system folder: " + String(err)))
+    else shell.showItemInFolder(filePath)
 }
 
 export const dataFolderNames = {
+    shows: "Shows",
     backups: "Backups",
     scriptures: "Bibles",
+    onlineMedia: "Online",
+    media: "Media",
     exports: "Exports",
     imports: "Imports",
     lessons: "Lessons",
+    planningcenter: "Planning Center",
     recordings: "Recordings",
+    audio: "Audio",
     userData: "Config",
+    cloud: "Cloud"
 }
 
-// DATA PATH
-export function getDataFolder(dataPath: string, name: string) {
-    if (!dataPath) return getDocumentsFolder(null, name)
-    return createFolder(path.join(dataPath, name))
+// Documents/FreeShow
+export function getDefaultDataFolderRoot() {
+    const documentsPath = getMediaFolderPath("documents")
+    if (!documentsPath) return appDataPath
+
+    const appFolderName = "FreeShow"
+    const fullPath = path.join(documentsPath, appFolderName)
+
+    try {
+        if (doesPathExist(fullPath)) {
+            fs.accessSync(fullPath, fs.constants.W_OK)
+            return fullPath
+        } else {
+            fs.mkdirSync(fullPath, { recursive: true })
+            return fullPath
+        }
+    } catch (err) {
+        console.warn("Documents folder is not writable, falling back to AppData:", err)
+        return appDataPath
+    }
+}
+export function getDataFolderRoot() {
+    return config.get("dataPath") || getDefaultDataFolderRoot()
+}
+
+export function getDataFolderPath(id: keyof typeof dataFolderNames, subfolder?: string) {
+    let folderPath = path.join(getDataFolderRoot(), dataFolderNames[id])
+    if (subfolder) folderPath = path.join(folderPath, subfolder)
+    return createFolder(folderPath)
 }
 
 // HELPERS
 
-function createFolder(path: string) {
-    if (doesPathExist(path)) return path
-    return fs.mkdirSync(path, { recursive: true }) || path
+export function isWritable(filePath: string): boolean {
+    try {
+        fs.accessSync(filePath, fs.constants.W_OK)
+        return true
+    } catch (err) {
+        return false
+    }
 }
 
-export function fileContentMatches(content: string | NodeJS.ArrayBufferView, path: string): boolean {
-    if (doesPathExist(path) && content === readFile(path)) return true
+export function getExtension(name: string) {
+    return path.extname(name).substring(1).toLowerCase()
+}
+
+export function createFolder(folderPath: string) {
+    if (doesPathExist(folderPath)) return folderPath
+    makeDir(folderPath)
+    return folderPath
+}
+
+// 2025-01-21_15-59
+export function getTimePointString() {
+    const date = new Date()
+    let name = date.toISOString()
+    name = name.slice(0, name.indexOf("T"))
+    name += `_${date.getHours().toString().padStart(2, "0")}-${date.getMinutes().toString().padStart(2, "0")}`
+
+    return name
+}
+
+export async function fileContentMatchesAsync(content: string | NodeJS.ArrayBufferView, filePath: string) {
+    if ((await doesPathExistAsync(filePath)) && content === (await readFileAsync(filePath))) return true
     return false
 }
 
-export function loadFile(p: string, contentId: string = ""): any {
-    if (!doesPathExist(p)) return { error: "not_found", id: contentId }
+export function fileContentMatches(content: string | NodeJS.ArrayBufferView, filePath: string): boolean {
+    if (doesPathExist(filePath) && content === readFile(filePath)) return true
+    return false
+}
 
-    let content: string = readFile(p)
+export function loadFile(filePath: string, contentId = "") {
+    if (!doesPathExist(filePath)) return { error: "not_found", id: contentId }
+
+    const content: string = readFile(filePath)
     if (!content) return { error: "not_found", id: contentId }
 
-    let show = parseShow(content)
+    const show = parseJSON(content)
     if (!show) return { error: "not_found", id: contentId }
 
     if (contentId && show[0] !== contentId) show[0] = contentId
@@ -170,96 +405,129 @@ export function loadFile(p: string, contentId: string = ""): any {
     return { id: contentId, content: show }
 }
 
-export function getPaths(): any {
-    let paths: any = {
-        // documents: app.getPath("documents"),
-        pictures: app.getPath("pictures"),
-        videos: app.getPath("videos"),
-        music: app.getPath("music"),
+export function getPaths() {
+    const paths: MainFilePaths = {
+        // documents: getMediaFolderPath("documents"),
+        pictures: getMediaFolderPath("pictures"),
+        videos: getMediaFolderPath("videos"),
+        music: getMediaFolderPath("music")
     }
-
-    // this will create "documents/Shows" folder if it doesen't exist
-    // paths.shows = getDocumentsFolder()
 
     return paths
 }
-
-// READ_FOLDER
-export function getFolderContent(_e: any, data: any) {
-    let folderPath: string = data.path
-    let fileList: string[] = readFolder(folderPath)
-
-    if (!fileList.length) {
-        toApp(READ_FOLDER, { path: folderPath, files: [], filesInFolders: [] })
-        return
+function getMediaFolderPath(name: Parameters<typeof app.getPath>[0]): string {
+    try {
+        return app.getPath(name)
+    } catch (err) {
+        console.warn(`Failed to get '${name}' path:`, err)
+        return ""
     }
-
-    let files: any[] = []
-    for (const name of fileList) {
-        let p: string = path.join(folderPath, name)
-        let stats: any = getFileStats(p)
-        if (stats) files.push({ ...stats, name })
-    }
-
-    if (!files.length) {
-        toApp(READ_FOLDER, { path: folderPath, files: [], filesInFolders: [] })
-        return
-    }
-
-    // get first "layer" of files inside folder for searching
-    let filesInFolders: string[] = []
-    if (data.listFilesInFolders) {
-        let folders: any[] = files.filter((a) => a.folder)
-        folders.forEach(getFilesInFolder)
-    }
-
-    function getFilesInFolder(folder: any) {
-        let fileList: string[] = readFolder(folder.path)
-        if (!fileList.length) return
-
-        for (const name of fileList) {
-            let p: string = path.join(folder.path, name)
-            let stats: any = getFileStats(p)
-            if (stats && !stats.folder) filesInFolders.push({ ...stats, name })
-        }
-    }
-
-    toApp(READ_FOLDER, { path: folderPath, files, filesInFolders })
 }
 
-export function getSimularPaths(data: any) {
-    let parentFolderPathNames = data.paths.map(getParentFolderName)
-    let allFilePaths = parentFolderPathNames.map((parentPath: string) => readFolder(parentPath).map((a) => join(parentPath, a)))
-    allFilePaths = [...new Set(allFilePaths.flat())]
+// READ_FOLDER
+export async function readFolderContent(data: { path: string | string[]; depth?: number; generateThumbnails?: boolean; captureFolderContent?: boolean }) {
+    const folderContent = new Map<string, FileFolder>()
 
-    let simularArray: any[] = []
-    data.paths.forEach((path: string) => {
-        let originalFileName = parse(path).name
+    if (!Array.isArray(data.path)) data.path = [data.path]
+    if (data.depth === undefined) data.depth = 0
 
-        allFilePaths.forEach((filePath: string) => {
-            let name = parse(filePath).name
-            if (data.paths.includes(filePath) || simularArray.find((a) => a[0].name.includes(name))) return
+    await Promise.all(
+        data.path.map(async (folderPath) => {
+            const stats = await getFileStatsAsync(folderPath)
+            if (!stats?.isDirectory()) return
 
-            let match = similarity(originalFileName, name)
+            await getFolderContentRecursive(folderPath)
+        })
+    )
+
+    async function getFolderContentRecursive(folderPath: string, currentDepth = 0) {
+        const exceededDepth = currentDepth > data.depth!
+        if ((data.captureFolderContent && currentDepth < 2 ? false : exceededDepth) || folderContent.has(folderPath)) {
+            let filePaths: string[] = []
+            if (currentDepth === 1) {
+                const fileList = await readFolderAsync(folderPath)
+                filePaths = fileList.map((name) => path.join(folderPath, name))
+            }
+
+            folderContent.set(folderPath, { isFolder: true, path: folderPath, name: path.basename(folderPath), files: filePaths })
+            return
+        }
+
+        const fileList = await readFolderAsync(folderPath)
+        const filePaths: string[] = fileList.map((name) => path.join(folderPath, name))
+
+        const captureThumbnailPaths = data.captureFolderContent && currentDepth === 1 ? getFirstMediaFiles(filePaths, 4) : []
+        const currentPaths = data.captureFolderContent && exceededDepth ? captureThumbnailPaths : filePaths
+
+        await Promise.all(
+            currentPaths.map(async (filePath) => {
+                const stats = await getFileStatsAsync(filePath)
+                if (!stats) return
+
+                if (stats.isDirectory()) {
+                    await getFolderContentRecursive(filePath, currentDepth + 1)
+                } else {
+                    let thumbnailPath = ""
+                    if (captureThumbnailPaths.includes(filePath) || (data.generateThumbnails && currentDepth === 0 && isMedia(path.extname(filePath).substring(1)))) {
+                        try {
+                            thumbnailPath = createThumbnail(filePath)
+                        } catch (err) {
+                            console.error("Thumbnail creation failed:", err)
+                        }
+                    }
+
+                    folderContent.set(filePath, { isFolder: false, path: filePath, name: path.basename(filePath), thumbnailPath, stats })
+                }
+            })
+        )
+
+        folderContent.set(folderPath, { isFolder: true, path: folderPath, name: path.basename(folderPath), files: filePaths })
+    }
+
+    return Object.fromEntries(folderContent)
+}
+
+function isMedia(extension: string) {
+    return [...imageExtensions, ...videoExtensions].includes(extension.toLowerCase())
+}
+
+function getFirstMediaFiles(paths: string[], count: number) {
+    return paths.filter((filePath: string) => isMedia(path.extname(filePath).substring(1))).slice(0, count)
+}
+
+export function getSimularPaths(data: { paths: string[] }) {
+    const parentFolderPathNames = data.paths.map(getParentFolderName)
+    const allFilePaths = parentFolderPathNames.map((parentPath: string) => readFolder(parentPath).map((a) => join(parentPath, a)))
+    const filteredFilePaths = [...new Set(allFilePaths.flat())]
+
+    let similarArray: [{ path: string; name: string }, number][] = []
+    data.paths.forEach((originalFilePath: string) => {
+        const originalFileName = parse(originalFilePath).name
+
+        filteredFilePaths.forEach((filePath: string) => {
+            const name = parse(filePath).name
+            if (data.paths.includes(filePath) || similarArray.find((a) => a[0].name.includes(name))) return
+
+            const match = similarity(originalFileName, name)
             if (match < 0.5) return
 
-            simularArray.push([{ path: filePath, name }, match])
+            similarArray.push([{ path: filePath, name }, match])
         })
     })
 
-    simularArray = simularArray.sort((a, b) => b[1] - a[1])
-    simularArray = simularArray.slice(0, 10).map((a) => a[0])
+    similarArray = similarArray.sort((a, b) => b[1] - a[1])
+    const sortedSimularArray = similarArray.slice(0, 10).map((a) => a[0])
 
-    return simularArray
+    return sortedSimularArray
 }
-function getParentFolderName(path: string) {
-    return parse(path).dir
+function getParentFolderName(filePath: string) {
+    return parse(filePath).dir
 }
 function similarity(str1: string, str2: string) {
     function levenshteinDistance(s1: string, s2: string) {
         const m = s1.length
         const n = s2.length
-        const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+        const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0) as number[])
 
         for (let i = 0; i <= m; i++) {
             for (let j = 0; j <= n; j++) {
@@ -284,134 +552,694 @@ function similarity(str1: string, str2: string) {
 }
 
 // OPEN_FOLDER
-export function selectFolder(e: any, msg: { channel: string; title: string | undefined; path: string | undefined }) {
-    let folder: any = selectFolderDialog(msg.title, msg.path)
-
+export function selectFolder(msg: { channel: string; title?: string; path?: string }) {
+    const folder = selectFolderDialog(msg.title, msg.path)
     if (!folder) return
 
-    // only when initializing
-    if (msg.channel === "DATA_SHOWS") {
-        e.reply(OPEN_FOLDER, { channel: msg.channel, data: { path: folder, showsPath: path.join(folder, "Shows") } })
-        return
-    }
-
     if (msg.channel === "SHOWS") {
-        loadShows({ showsPath: folder })
-        toApp(MAIN, { channel: "FULL_SHOWS_LIST", data: getAllShows({ path: folder }) })
+        sendMain(Main.FULL_SHOWS_LIST, getAllShows())
+        sendMain(Main.SHOWS, loadShows())
     }
 
-    e.reply(OPEN_FOLDER, { channel: msg.channel, data: { path: folder } })
+    sendToMain(ToMain.OPEN_FOLDER2, { channel: msg.channel, path: folder })
+    return
 }
 
 // OPEN_FILE
-export function selectFiles(e: any, msg: { id: string; channel: string; title?: string; filter: any; multiple: boolean; read?: boolean }) {
-    let files: any = selectFilesDialog(msg.title, msg.filter, msg.multiple === undefined ? true : msg.multiple)
+export function selectFiles(msg: { id: string; channel: string; title?: string; filter: Electron.FileFilter; multiple: boolean; read?: boolean }) {
+    const files = selectFilesDialog(msg.title, msg.filter, msg.multiple === undefined ? true : msg.multiple)
     if (!files) return
 
-    let content: any = {}
+    const content: { [key: string]: string } = {}
     if (msg.read) files.forEach(getContent)
-    function getContent(path: string) {
-        content[path] = readFile(path)
+    function getContent(filePath: string) {
+        content[filePath] = readFile(filePath)
     }
 
-    e.reply(OPEN_FILE, { channel: msg.channel || "", data: { id: msg.id, files, content } })
+    sendToMain(ToMain.OPEN_FILE2, { channel: msg.channel, id: msg.id, files, content })
+    return
 }
 
 // FILE_INFO
-export function getFileInfo(e: any, filePath: string) {
-    let stats: any = getFileStats(filePath)
-    if (stats) e.reply(FILE_INFO, stats)
+export function getFileInfo(filePath: string) {
+    const stats = getFileStats(filePath)
+    return stats
 }
 
 // READ EXIF
-export function readExifData(e: any, data: any) {
-    try {
-        new ExifImage({ image: data.id }, (err, exifData) => {
-            actionComplete(err, "Error getting EXIF data")
-            if (!err) e.reply(READ_EXIF, { ...data, exif: exifData })
-        })
-    } catch (err) {
-        actionComplete(err, "Error loading EXIF image")
+export function readExifData({ id }: { id: string }): Promise<{ id: string; exif: ExifData }> {
+    return new Promise((resolve) => {
+        try {
+            new ExifImage({ image: id }, (err, exifData) => {
+                actionComplete(err, "Error getting EXIF data")
+                if (!err) resolve({ id, exif: exifData })
+            })
+        } catch (err) {
+            actionComplete(err as Error, "Error loading EXIF image")
+        }
+    })
+}
+
+// GET MEDIA CODEC
+export async function getMediaCodec(data: { path: string }) {
+    return await extractCodecInfo(data)
+}
+
+type MediaCodecInfo = { path: string; codecs: string[]; mimeType: string; mimeCodec: string }
+
+function getEmptyCodecInfo(data: { path: string }): MediaCodecInfo {
+    return { ...data, codecs: [], mimeType: getMimeType(data.path), mimeCodec: "" }
+}
+
+async function extractCodecInfo(data: { path: string }): Promise<MediaCodecInfo> {
+    const MP4Box = require("mp4box")
+
+    return new Promise((resolve) => {
+        const emptyResult = getEmptyCodecInfo(data)
+        const mimeType = emptyResult.mimeType
+
+        try {
+            const buffer = fs.readFileSync(data.path)
+            if (!buffer?.length || !hasIsoBmffHeader(buffer)) return resolve(emptyResult)
+
+            const uint8Array = new Uint8Array(buffer)
+            const arrayBuffer = uint8Array.buffer.slice(uint8Array.byteOffset, uint8Array.byteOffset + uint8Array.byteLength) as ArrayBuffer & { fileStart?: number }
+            if (!arrayBuffer) return resolve(emptyResult)
+
+            const mp4boxfile = MP4Box.createFile()
+            let settled = false
+            const resolveOnce = (result: MediaCodecInfo) => {
+                if (settled) return
+                settled = true
+                resolve(result)
+            }
+
+            mp4boxfile.onError = (err: Error) => {
+                console.error("MP4Box error:", err)
+                resolveOnce(emptyResult)
+            }
+            mp4boxfile.onReady = (info: { tracks: { codec: string }[]; [key: string]: any }) => {
+                if (!Array.isArray(info?.tracks)) {
+                    resolveOnce(emptyResult)
+                    return
+                }
+
+                const codecs = info.tracks.map((track: { codec: string }) => track?.codec).filter((codec: string | undefined): codec is string => Boolean(codec))
+                if (!codecs.length) return resolveOnce(emptyResult)
+
+                const mimeCodec = `${mimeType}; codecs="${codecs.join(", ")}"`
+                resolveOnce({ ...data, codecs, mimeType, mimeCodec })
+            }
+
+            arrayBuffer.fileStart = 0
+            try {
+                mp4boxfile.appendBuffer(arrayBuffer)
+                mp4boxfile.flush()
+            } catch (err) {
+                console.error("MP4Box append/flush error:", err)
+                resolveOnce(emptyResult)
+            }
+        } catch (err) {
+            console.error("MP4Box error catch:", err)
+            resolve(emptyResult)
+            return
+        }
+    })
+}
+
+function hasIsoBmffHeader(buffer: Buffer) {
+    // MP4/ISO-BMFF files should contain an 'ftyp' box near the beginning.
+    let offset = 0
+    const maxBytes = Math.min(buffer.length, 256 * 1024)
+
+    while (offset + 8 <= maxBytes) {
+        const size32 = buffer.readUInt32BE(offset)
+        const type = buffer.toString("ascii", offset + 4, offset + 8)
+        if (type === "ftyp") return true
+
+        // size==0 means box extends to EOF; size==1 means extended 64-bit size follows.
+        if (size32 === 0) break
+
+        if (size32 === 1) {
+            if (offset + 16 > maxBytes) break
+            const size64 = Number(buffer.readBigUInt64BE(offset + 8))
+            if (!Number.isFinite(size64) || size64 < 16) break
+            offset += size64
+            continue
+        }
+
+        // Invalid box size, stop scanning to avoid infinite loops.
+        if (size32 < 8) break
+        offset += size32
     }
+
+    return false
+}
+
+export function getMimeType(filePath: string) {
+    if (typeof filePath !== "string") return ""
+
+    // const ext = filePath.split(".").pop()?.toLowerCase() || ""
+    const ext = path.extname(filePath).toLowerCase().slice(1)
+    return mimeTypes[ext] || ""
+}
+
+// get embedded subtitles/captions
+export function getMediaTracks(data: { path: string }) {
+    return extractSubtitles(data)
+}
+
+async function extractSubtitles(data: { path: string }): Promise<{ path: string; tracks: Subtitle[] }> {
+    const MP4Box = require("mp4box")
+
+    let arrayBuffer: (ArrayBuffer & { fileStart?: number }) | null = null
+    let buffer: Buffer
+    try {
+        buffer = fs.readFileSync(data.path)
+        if (!buffer?.length || !hasIsoBmffHeader(buffer)) return { ...data, tracks: [] }
+
+        const uint8Array = new Uint8Array(buffer)
+        arrayBuffer = uint8Array.buffer.slice(uint8Array.byteOffset, uint8Array.byteOffset + uint8Array.byteLength) as ArrayBuffer & { fileStart?: number }
+    } catch (err) {
+        console.error(err)
+        return { ...data, tracks: [] }
+    }
+
+    if (!arrayBuffer) return { ...data, tracks: [] }
+    const mp4ArrayBuffer = arrayBuffer
+
+    return new Promise((resolve) => {
+        let settled = false
+        const resolveOnce = (result: { path: string; tracks: Subtitle[] }) => {
+            if (settled) return
+            settled = true
+            resolve(result)
+        }
+
+        const mp4boxfile = MP4Box.createFile()
+        mp4boxfile.onError = (e: Error) => {
+            console.error("MP4Box error:", e)
+            resolveOnce({ ...data, tracks: [] })
+        }
+        mp4boxfile.onReady = (info: any) => {
+            if (!Array.isArray(info?.tracks)) {
+                resolveOnce({ ...data, tracks: [] })
+                return
+            }
+
+            const subtitleTracks = info.tracks.filter((track: any) => track?.type === "subtitles" || track?.type === "text")
+            if (!subtitleTracks.length) {
+                resolveOnce({ ...data, tracks: [] })
+                return
+            }
+
+            const tracks: Subtitle[] = []
+            let completed = 0
+            const pendingByTrackId = new Set<number>(subtitleTracks.map((track: any) => track.id))
+            const trackVtt = new Map<number, { lines: string[]; index: number; language: string }>()
+
+            subtitleTracks.forEach((track: any) => {
+                const vttLines = ["WEBVTT\n"]
+                trackVtt.set(track.id, { lines: vttLines, index: 1, language: track.language || "" })
+
+                mp4boxfile.setExtractionOptions(track.id, null, { nbSamples: track.nb_samples })
+            })
+
+            mp4boxfile.onSamples = (id: number, _user: any, samples: { data: BufferSource; cts: number; duration: number }[]) => {
+                if (!pendingByTrackId.has(id)) return
+
+                const trackInfo = subtitleTracks.find((track: any) => track.id === id)
+                const vttInfo = trackVtt.get(id)
+                if (!trackInfo || !vttInfo) return
+
+                const timescale = trackInfo.timescale || 1
+                const utf8Decoder = new TextDecoder("utf-8")
+
+                samples.forEach((sample) => {
+                    let subtitleText = utf8Decoder.decode(sample.data).trim()
+                    // remove any non-printable characters (excluding line breaks)
+                    subtitleText = subtitleText.replace(/[^\x20-\x7E\n\r]+/g, "")
+                    if (!subtitleText) return
+
+                    const startTime = formatTimestamp((sample.cts / timescale) * 1000)
+                    const endTime = formatTimestamp(((sample.cts + sample.duration) / timescale) * 1000)
+
+                    vttInfo.lines.push(`${vttInfo.index}`)
+                    vttInfo.lines.push(`${startTime} --> ${endTime}`)
+                    vttInfo.lines.push(`${subtitleText}\n`)
+                    vttInfo.index++
+                })
+
+                pendingByTrackId.delete(id)
+                completed++
+
+                if (vttInfo.lines.length > 1) {
+                    tracks.push({ lang: vttInfo.language.slice(0, 2), name: vttInfo.language, vtt: vttInfo.lines.join("\n"), embedded: true })
+                }
+
+                if (completed === subtitleTracks.length) resolveOnce({ ...data, tracks })
+            }
+
+            mp4boxfile.start()
+        }
+
+        mp4ArrayBuffer.fileStart = 0
+        try {
+            mp4boxfile.appendBuffer(mp4ArrayBuffer)
+            mp4boxfile.flush()
+        } catch (err) {
+            console.error("MP4Box append/flush error:", err)
+            resolveOnce({ ...data, tracks: [] })
+        }
+    })
+}
+
+// format timestamp in WebVTT format (HH:MM:SS.mmm)
+function formatTimestamp(timestamp: number) {
+    const hours = Math.floor(timestamp / 3600000)
+    const minutes = Math.floor((timestamp % 3600000) / 60000)
+    const seconds = Math.floor((timestamp % 60000) / 1000)
+    const milliseconds = Math.floor(timestamp % 1000)
+
+    const formatted = [hours.toString().padStart(2, "0"), minutes.toString().padStart(2, "0"), seconds.toString().padStart(2, "0") + "." + milliseconds.toString().padStart(3, "0")].join(":")
+    return formatted
+}
+
+/// ///
+
+export function getMediaSyncFolderPath() {
+    return getStore("config").mediaFolderPath || getDataFolderPath("media")
+}
+export function setMediaSyncFolderPath(folderPath: string) {
+    setStoreValue({ file: "config", key: "mediaFolderPath", value: folderPath })
+}
+
+function fileNamesMatch(nameA: string, nameB: string) {
+    return normalizeFileNameForMatch(nameA) === normalizeFileNameForMatch(nameB)
+}
+function normalizeFileNameForMatch(name: string) {
+    return name.normalize("NFC").toLowerCase()
+}
+
+function normalizeLocalPath(filePath: string) {
+    if (!filePath || typeof filePath !== "string") return ""
+
+    let normalizedPath = filePath
+
+    if (normalizedPath.startsWith("file://")) {
+        try {
+            normalizedPath = fileURLToPath(normalizedPath)
+        } catch {
+            normalizedPath = normalizedPath.replace(/^file:\/\//, "")
+        }
+    }
+
+    try {
+        normalizedPath = decodeURI(normalizedPath)
+    } catch {
+        // ignore malformed URI sequences and keep original
+    }
+
+    return normalizedPath
 }
 
 // SEARCH FOR MEDIA FILE (in drawer media folders & their following folders)
-export function locateMediaFile({ fileName, splittedPath, folders, ref }: any) {
-    let matches: string[] = []
+const NESTED_SEARCH = 8 // folder levels deep
+export async function locateMediaFile({ filePath, folders }: { filePath: string; folders: string[] }) {
+    const normalizedOriginalPath = normalizeLocalPath(filePath)
+    if ((await doesMediaExist({ path: normalizedOriginalPath })).exists) return { path: normalizedOriginalPath, hasChanged: false }
 
-    findMatches(true)
-    if (matches.length !== 1) findMatches()
-    if (matches.length !== 1) return
+    // Media Sync Folder
+    const mediaFolder = getMediaSyncFolderPath()
+    const folderId = getFileParentFolderId(normalizedOriginalPath)
+    const fileName = upath.basename(normalizedOriginalPath)
+    const mediaFilePath = path.join(mediaFolder, folderId, fileName)
+    if ((await doesMediaExist({ path: mediaFilePath })).exists) return { path: mediaFilePath, hasChanged: true }
+    const searchFolders = [mediaFolder, ...folders].map(normalizeLocalPath).filter((folderPath) => folderPath)
 
-    toApp(MAIN, { channel: "LOCATE_MEDIA_FILE", data: { path: matches[0], ref } })
+    // lookup already replaced paths from cache
+    const syncCache = getStore("CACHE_SYNC")
+    if (!syncCache.replacedPaths) syncCache.replacedPaths = {}
+    const cacheId = `${folderId}_${fileName}`
+    const cachedPath = syncCache.replacedPaths[cacheId]
+    // TEMP disable in case the wrong file is cached
+    if (false && cachedPath && (await doesMediaExist({ path: cachedPath })).exists) {
+        return { path: cachedPath, hasChanged: false }
+    }
 
-    /////
+    const parentFolderName = upath.basename(upath.dirname(normalizedOriginalPath))
 
-    function findMatches(searchWithFolder: boolean = false) {
-        for (const folderPath of folders) {
-            if (matches.length > 1) return
+    const newPath = await findMatches()
+    if (!newPath) return null
 
-            checkFolderForMatches(folderPath, searchWithFolder)
+    // store replaced path in cache
+    syncCache.replacedPaths[cacheId] = newPath
+    setStore(_store.CACHE_SYNC, syncCache)
 
-            if (matches.length) return
+    return { path: newPath, hasChanged: true }
 
-            let files = readFolder(folderPath)
-            for (const name of files) {
-                if (matches.length) return
+    async function findMatches() {
+        for (const folderPath of searchFolders) {
+            const newPath = await searchInFolder(folderPath)
+            if (newPath) return newPath
+        }
+        return null
+    }
 
-                let p: string = path.join(folderPath, name)
-                let fileStat = getFileStats(p)
-                if (fileStat?.folder) checkFolderForMatches(p, searchWithFolder)
+    async function searchInFolder(folderPath: string, level = 1): Promise<string | null> {
+        if (level > NESTED_SEARCH) return null
+        if (!(await doesPathExistAsync(folderPath))) return null
+
+        // check any path with same parent folder for matches first to limit search a bit
+        // this should also help if multiple files has the same name, but originates from different folders
+        const potentialPath = path.join(folderPath, parentFolderName, fileName)
+        if (await doesPathExistAsync(potentialPath)) {
+            return potentialPath
+        }
+
+        let entries: fs.Dirent[] = []
+        try {
+            entries = await readFolderWithTypesAsync(folderPath)
+        } catch {
+            return null
+        }
+
+        const subFolders: string[] = []
+
+        // ---- Scan files & collect subfolders
+        let found: string | null = null
+
+        // search all files in current folder before searching in any nested folders
+        for (const entry of entries) {
+            const currentPath = path.join(folderPath, entry.name)
+
+            if (entry.isDirectory()) {
+                subFolders.push(currentPath)
+                continue
+            }
+
+            if (fileNamesMatch(entry.name, fileName)) {
+                return currentPath
+            }
+        }
+
+        if (found) return found
+
+        // ---- Scan files in subfolders
+        await asyncPool(8, subFolders, async (sub) => {
+            if (found) return
+
+            const result = await searchInFolder(sub, level + 1)
+            if (result) {
+                found = result
+            }
+        })
+
+        return found
+    }
+}
+
+// poolLimit = number of concurrent promises
+async function asyncPool<T>(poolLimit: number, array: T[], iteratorFn: (item: T) => Promise<void>) {
+    const ret: Promise<void>[] = []
+    const executing: Promise<void>[] = []
+
+    for (const item of array) {
+        if ((iteratorFn as any).shouldStop?.()) break
+        const p = Promise.resolve().then(() => iteratorFn(item))
+        ret.push(p)
+
+        if (poolLimit <= array.length) {
+            const e: Promise<void> = p.then(() => {
+                executing.splice(executing.indexOf(e), 1)
+            })
+            executing.push(e)
+
+            if (executing.length >= poolLimit) {
+                await Promise.race(executing)
             }
         }
     }
 
-    function checkFolderForMatches(folderPath: string, searchWithFolder: boolean = false) {
-        let files = readFolder(folderPath)
+    await Promise.all(ret)
+}
 
-        let folderName = path.basename(folderPath)
-        let searchName = fileName
-        if (searchWithFolder && splittedPath?.length > 1) searchName = path.join(splittedPath[splittedPath.length - 2], fileName)
+/// //
 
-        for (let name of files) {
-            if (matches.length > 1) return
+// detect new files in downloads folder for easy importing
+// - auto import .project files
+// - suggest importing videos/images/pdfs
+// - WIP extract & import zip files with media content
+export async function detectNewFiles() {
+    if (!getStore("SETTINGS").initialized) return
 
-            let pathName = searchWithFolder ? path.join(folderName, name) : name
-            if (pathName === searchName) {
-                let p: string = path.join(folderPath, name)
-                matches.push(p)
-            }
-        }
+    let downloadsFolder: string
+    try {
+        downloadsFolder = app.getPath("downloads")
+    } catch {
+        return
     }
+
+    const MAX_TIME = 16 * 60 * 60 * 1000 // 16 hours
+    const ONE_MINUTE = 60 * 1000
+    const WRITE_WAIT_MS = 2000
+    const temporaryExtensions = [".crdownload", ".part", ".download", ".tmp"]
+
+    // read folder once and build known set
+    const dirListing = await readFolderAsync(downloadsFolder)
+    const knownFiles = new Set(dirListing)
+
+    // initial recent files
+    const cutoff = Date.now() - MAX_TIME
+    const allRecentFiles: string[] = []
+    for (const fileName of dirListing) {
+        if (!fileName) continue
+        const ext = path.extname(fileName).toLowerCase()
+        if (temporaryExtensions.includes(ext)) continue
+
+        const filePath = path.join(downloadsFolder, fileName)
+        const stats = await getFileStatsAsync(filePath)
+        if (!stats) continue
+
+        if (stats.birthtimeMs < cutoff) continue
+
+        allRecentFiles.push(filePath)
+    }
+
+    sendToMain(ToMain.RECENTLY_ADDED_FILES, { paths: allRecentFiles })
+
+    // watch for file changes
+    try {
+        fs.watch(downloadsFolder, { persistent: false }, async (eventType, filename) => {
+            if (eventType !== "rename" || !filename) return
+
+            const ext = path.extname(filename).toLowerCase()
+            if (temporaryExtensions.includes(ext)) return
+
+            const filePath = path.join(downloadsFolder, filename)
+
+            const exists = await doesPathExistAsync(filePath)
+            if (!exists) {
+                const isKnown = knownFiles.delete(filename)
+                if (!isKnown) return
+
+                const idx = allRecentFiles.indexOf(filePath)
+                if (idx === -1) return
+
+                allRecentFiles.splice(idx, 1)
+                sendToMain(ToMain.RECENTLY_ADDED_FILES, { paths: allRecentFiles })
+                return
+            }
+
+            if (knownFiles.has(filename)) return
+
+            // treat as potential new download after a short write-wait
+            setTimeout(async () => {
+                const stats = await getFileStatsAsync(filePath)
+                if (!stats) return
+
+                knownFiles.add(filename)
+                if (stats.birthtimeMs < Date.now() - ONE_MINUTE) return
+
+                if (!allRecentFiles.includes(filePath)) allRecentFiles.push(filePath)
+                sendToMain(ToMain.RECENTLY_ADDED_FILES, { paths: allRecentFiles })
+            }, WRITE_WAIT_MS)
+        })
+    } catch (err) {
+        console.warn("No permission to watch folder:", err)
+    }
+}
+
+/// ///
+
+// region: BUNDLE MEDIA FILES FROM ALL SHOWS AND PROJECTS (IMAGE/VIDEO/AUDIO)
+let currentlyBundling = false
+/**
+ * Bundles media files from all shows and projects
+ *
+ * @param openFolderWhenDone [default=false] Whether to open the output folder when done
+ */
+export function bundleMediaFiles({ openFolder = false }: { openFolder?: boolean } = {}) {
+    if (currentlyBundling) return
+    currentlyBundling = true
+
+    let allMediaFiles: string[] = []
+    function addFile(filePath: string | undefined) {
+        if (filePath) allMediaFiles.push(filePath)
+    }
+
+    // shows
+    const showsPath = getDataFolderPath("shows")
+    let showsList = readFolder(showsPath)
+    showsList = showsList
+        .filter((name) => name.toLowerCase().endsWith(".show")) // only .show files
+        .filter((trimmedName) => trimmedName) // remove files with no name
+
+    function readShow(fileName: string) {
+        const showPath: string = path.join(showsPath, fileName)
+        const jsonData = readFile(showPath) || "{}"
+        const show: Show | undefined = parseShow(jsonData)?.[1]
+
+        if (!show) return
+
+        // media backgrounds & audio
+        Object.values(show.media || {}).forEach((media) => {
+            const mediaPath = media.path || media.id
+            if (mediaPath) addFile(mediaPath)
+        })
+
+        // slide media items
+        Object.values(show.slides || {}).forEach((a) => getItemsMedia(a.items || []))
+    }
+    for (const name of showsList) readShow(name)
+
+    // projects
+    function readProject(project: Project) {
+        project?.shows?.forEach((show) => {
+            if (!show) return
+            const type = show.type || "show"
+            if (["image", "video", "audio", "pdf", "ppt"].includes(type)) {
+                addFile(show.id)
+            } else if (type === "folder") {
+                // WIP handle project media folders?
+            }
+        })
+    }
+    const projects = getStore("PROJECTS").projects as Project
+    Object.values(projects || {}).forEach(readProject)
+
+    // get overlays media
+    const overlays = getStore("OVERLAYS")
+    Object.values(overlays || {}).forEach((a) => getItemsMedia(a.items || []))
+
+    // get templates media
+    const templates = getStore("TEMPLATES")
+    Object.values(templates || {}).forEach((a) => getItemsMedia(a.items || []))
+
+    function getItemsMedia(items: Item[]) {
+        items.forEach((item) => {
+            if (item?.type === "media") addFile(item.src)
+        })
+    }
+
+    // remove duplicates
+    allMediaFiles = [...new Set(allMediaFiles)]
+    if (!allMediaFiles.length) {
+        currentlyBundling = false
+        return
+    }
+
+    // bundle should use default Media folder, and not any custom sync folders
+    const outputFolder = getDataFolderPath("media")
+
+    // copy media files
+    addToMediaFolder(allMediaFiles, outputFolder) // skip awaiting
+
+    if (openFolder) openInSystem(outputFolder, true)
+    currentlyBundling = false
+}
+
+export async function addToMediaFolder(mediaPaths: string[], outputFolder?: string) {
+    const mediaFolderPath = outputFolder || getMediaSyncFolderPath()
+    let changed = false
+
+    await Promise.all(
+        mediaPaths.map(async (mediaPath) => {
+            // if media path is already in media folder, skip
+            if (mediaPath.startsWith(mediaFolderPath)) return
+
+            // make sure original media exists
+            if (!(await doesPathExistAsync(mediaPath))) return
+
+            // ensure folder name is matching path in case files with the same name has the same parent folder name
+            const folderId = getFileParentFolderId(mediaPath)
+
+            const newFolderPath = path.join(mediaFolderPath, folderId)
+            createFolder(newFolderPath)
+
+            const fileName = path.basename(mediaPath)
+            const newMediaPath = path.join(newFolderPath, fileName)
+
+            const alreadyExists = await doesPathExistAsync(newMediaPath)
+            if (alreadyExists) {
+                // no need when we have the folder name path id
+                // double check that it's actually different
+                // const matches = await fileContentMatchesAsync(await readFileAsync(mediaPath), newMediaPath)
+                // if (matches) return
+                return
+            }
+
+            changed = true
+            await copyFileAsync(mediaPath, newMediaPath)
+        })
+    )
+
+    return changed
+}
+
+function getFileParentFolderId(filePath: string) {
+    const fileFolderPath = upath.dirname(filePath)
+    const parentFolderName = upath.basename(fileFolderPath)
+    const uniqueName = parentFolderName + "_" + filePathHashCode(fileFolderPath)
+    return uniqueName
 }
 
 // LOAD SHOWS
 
-export function loadShows({ showsPath }: any) {
+export function loadShows(returnShows = false, reCacheNames: string[] = []) {
+    const showsPath = getDataFolderPath("shows")
+
+    specialCaseFixer()
+
     // list all shows in folder
     let filesInFolder: string[] = readFolder(showsPath)
 
-    let cachedShows = stores.SHOWS.store
-    let newCachedShows: any = {}
+    const cachedShows = getStore("SHOWS") || {}
+    const newCachedShows: TrimmedShows = {}
+    const textCache: { [key: string]: string } = {}
+
+    // create a map for quick lookup of cached shows by name
+    const cachedShowNames = new Map<string, string>()
+    for (const [id, show] of Object.entries(cachedShows)) {
+        if (show?.name && !reCacheNames.includes(show.name)) cachedShowNames.set(show.name, id)
+    }
+
+    filesInFolder = filesInFolder
+        .filter((name) => name.toLowerCase().endsWith(".show"))
+        .map((name) => name.slice(0, -5)) // remove .show extension
+        .filter((trimmedName) => trimmedName) // remove files with no name
 
     for (const name of filesInFolder) checkShow(name)
     function checkShow(name: string) {
-        if (!name.toLowerCase().includes(".show")) return
-
-        let trimmedName = name.slice(0, -5) // remove .show
-
-        // no name results in the id trying to be read leading to show not found
-        if (!trimmedName) return
-
-        let matchingShowId = Object.entries(cachedShows).find(([_id, a]: any) => a.name === trimmedName)?.[0]
+        const matchingShowId = cachedShowNames.get(name)
         if (matchingShowId && !newCachedShows[matchingShowId]) {
             newCachedShows[matchingShowId] = cachedShows[matchingShowId]
             return
         }
 
-        let p: string = path.join(showsPath, name)
-        let jsonData = readFile(p) || "{}"
-        let show = parseShow(jsonData)
+        const showPath: string = path.join(showsPath, `${name}.show`)
+        const jsonData = readFile(showPath) || "{}"
+        const show = parseShow(jsonData)
 
         if (!show || !show[1]) return
 
@@ -419,28 +1247,256 @@ export function loadShows({ showsPath }: any) {
         // some old duplicated shows might have the same id
         if (newCachedShows[id]) id = uid()
 
-        newCachedShows[id] = trimShow({ ...show[1], name: trimmedName })
+        const trimmedShow = trimShow({ ...show[1], name })
+        if (trimmedShow) newCachedShows[id] = trimmedShow
+
+        // cache text content
+        const txt = getTextCacheString(show[1])
+        if (txt) textCache[id] = txt
     }
 
-    toApp(STORE, { channel: "SHOWS", data: newCachedShows })
+    // send updated text cache
+    if (Object.keys(textCache).length) {
+        const cache = getStore("CACHE")
+        cache.text = { ...cache.text, ...textCache }
+        sendMain(Main.CACHE, cache)
+    }
+
+    if (returnShows) return newCachedShows
+
+    // save this (for cloud sync)
+    setStore(_store.SHOWS, newCachedShows)
+
+    return newCachedShows
+}
+
+export async function loadShowsAsync(returnShows = false, reCacheNames: string[] = []) {
+    const showsPath = getDataFolderPath("shows")
+
+    specialCaseFixer()
+
+    // list all shows in folder
+    const allFiles = await readFolderAsync(showsPath)
+    const filesInFolder = allFiles
+        .filter((name) => name.toLowerCase().endsWith(".show"))
+        .map((name) => name.slice(0, -5)) // remove .show extension
+        .filter((trimmedName) => trimmedName) // remove files with no name
+
+    const cachedShows = getStore("SHOWS") || {}
+    const newCachedShows: TrimmedShows = {}
+    const textCache: { [key: string]: string } = {}
+
+    // send already cached shows to the frontend immediately
+    if (!returnShows && !reCacheNames.length && Object.keys(cachedShows).length) {
+        sendMain(Main.SHOWS, cachedShows as TrimmedShows)
+    }
+
+    // create a map for quick lookup of cached shows by name
+    const cachedShowNames = new Map<string, string>()
+    for (const [id, show] of Object.entries(cachedShows)) {
+        if (show?.name && !reCacheNames.includes(show.name)) cachedShowNames.set(show.name, id)
+    }
+
+    const BATCH_SIZE = 50
+    for (let i = 0; i < filesInFolder.length; i += BATCH_SIZE) {
+        const batch = filesInFolder.slice(i, i + BATCH_SIZE)
+        let hadIo = false
+
+        await Promise.all(
+            batch.map(async (name) => {
+                const matchingShowId = cachedShowNames.get(name)
+                if (matchingShowId && !newCachedShows[matchingShowId]) {
+                    newCachedShows[matchingShowId] = cachedShows[matchingShowId]
+                    return
+                }
+
+                hadIo = true
+                const showPath: string = path.join(showsPath, `${name}.show`)
+                const jsonData = (await readFileAsync(showPath)) || "{}"
+                const show = parseShow(jsonData)
+
+                if (!show || !show[1]) return
+
+                let id = show[0]
+                // some old duplicated shows might have the same id
+                if (newCachedShows[id]) id = uid()
+
+                const trimmedShow = trimShow({ ...show[1], name })
+                if (trimmedShow) newCachedShows[id] = trimmedShow
+
+                // cache text content
+                const txt = getTextCacheString(show[1])
+                if (txt) textCache[id] = txt
+            })
+        )
+
+        if (hadIo) await new Promise((resolve) => setImmediate(resolve))
+    }
+
+    // send updated text cache
+    if (Object.keys(textCache).length) {
+        const cache = getStore("CACHE")
+        cache.text = { ...cache.text, ...textCache }
+        sendMain(Main.CACHE, cache)
+    }
+
+    if (returnShows) return newCachedShows
+
+    setImmediate(() => setStore(_store.SHOWS, newCachedShows))
+
+    return newCachedShows
+}
+
+// same as frontend setShow.ts
+function getTextCacheString(show: Show) {
+    if (!show?.slides || show?.reference?.type) return ""
+
+    return Object.values(show.slides)
+        .flatMap((slide) => slide?.items)
+        .flatMap((item) => item?.lines || [])
+        .flatMap((line) => line?.text || [])
+        .map((text) => text?.value || "")
+        .join(" ")
+        .toLowerCase()
 }
 
 export function parseShow(jsonData: string) {
-    let show = null
+    return parseJSON(jsonData) as [string, Show] | null
+}
+// export function parseBible(jsonData: string) {
+//     return parseJSON(jsonData) as [string, Bible] | null
+// }
+export function parseJSON(jsonData: string) {
+    let show: [string, any] | null = null
 
     try {
         show = JSON.parse(jsonData)
-    } catch (error) {
+    } catch (err) {
         // try to fix broken files
         jsonData = jsonData.slice(0, jsonData.indexOf("}}]") + 3)
 
         // try again
         try {
             show = JSON.parse(jsonData)
-        } catch (err) {
+        } catch (e) {
             console.error("Error parsing show")
         }
     }
 
     return show
+}
+
+// load shows by id (used for show export)
+export function getShowsFromIds(showIds: string[], projectItems?: any[]) {
+    const shows: Show[] = []
+    const cachedShows = getStore("SHOWS")
+    const showsPath = getDataFolderPath("shows")
+
+    showIds.forEach((id) => {
+        // Find if this is a project item (section/media)
+        const projectItem = projectItems?.find((item) => item.id === id)
+
+        if (projectItem && projectItem.type && projectItem.type !== "show") {
+            const type = projectItem.type
+            if (type === "section") {
+                // Synthetic show for section header
+                shows.push({
+                    id,
+                    name: projectItem.name || "Section",
+                    type: "section",
+                    color: projectItem.color || "",
+                    notes: projectItem.notes || "",
+                    data: projectItem.data || {},
+                    meta: {},
+                    settings: { activeLayout: "default" },
+                    slides: {},
+                    layouts: {},
+                    media: {}
+                } as any)
+            } else if (type === "image" || type === "video" || type === "audio") {
+                // Synthetic show for media slide
+                const filename = upath.basename(id)
+                shows.push({
+                    id,
+                    name: projectItem.name || filename,
+                    type,
+                    meta: {},
+                    settings: { activeLayout: "default" },
+                    slides: {
+                        "slide1": {
+                            group: null,
+                            color: null,
+                            settings: {},
+                            notes: "",
+                            items: []
+                        }
+                    },
+                    layouts: {
+                        "default": {
+                            id: "default",
+                            name: "Default",
+                            notes: "",
+                            slides: [
+                                {
+                                    id: "slide1",
+                                    background: id
+                                }
+                            ]
+                        }
+                    },
+                    media: {
+                        [id]: {
+                            id,
+                            path: id,
+                            type: "media"
+                        }
+                    }
+                } as any)
+            }
+            return
+        }
+
+        const cachedShow = cachedShows[id]
+        if (!cachedShow) return
+
+        const fileName = cachedShow.name || id
+
+        const showPath: string = path.join(showsPath, `${fileName}.show`)
+        const jsonData = readFile(showPath) || "{}"
+        const show = parseShow(jsonData)
+
+        if (show?.[1]) shows.push({ ...show[1], id })
+    })
+
+    return shows
+}
+
+// some users might have got themselves in a situation they can't get out of
+// example: enables "kiosk" mode on mac might have resulted in a black screen, and they can't find the app data location to revert it!
+// how: Place any file in your Documents/FreeShow folder that has the FIXES key in it's name (e.g. DISABLE_KIOSK_MODE), when you now start your app the fix will be triggered!
+const FIXES = {
+    DISABLE_KIOSK_MODE: () => {
+        // wait to ensure output settings have loaded in the app!
+        setTimeout(() => {
+            toApp(OUTPUT, { channel: "UPDATE_OUTPUTS_DATA", data: { key: "kioskMode", value: false, autoSave: true } })
+            OutputHelper.getAllOutputs().forEach((output) => output.window.setKiosk(false))
+        }, 1000)
+    },
+    OPEN_APPDATA_SETTINGS: () => {
+        // this will open the "settings.json" file located at the app data location (can also be used to find other setting files here)
+        openInSystem(_store.SETTINGS?.path || "", true)
+    },
+    ADMIN_PROFILE: () => {
+        setAutoProfile("admin")
+    }
+}
+function specialCaseFixer() {
+    const defaultDataFolder = getDefaultDataFolderRoot()
+    if (!doesPathExist(defaultDataFolder)) return
+
+    const files: string[] = readFolder(defaultDataFolder)
+    files.forEach((fileName) => {
+        const matchFound = Object.keys(FIXES).find((key) => fileName.includes(key))
+        if (matchFound) FIXES[matchFound as keyof typeof FIXES]()
+    })
 }

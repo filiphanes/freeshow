@@ -1,18 +1,32 @@
-import { audioStreams } from "./../stores"
 import { get } from "svelte/store"
-import { MAIN, STORE } from "../../types/Channels"
-import { clone } from "../components/helpers/array"
+import { Main } from "../../types/IPC/Main"
+import type { Projects } from "../../types/Projects"
+import type { Shows } from "../../types/Show"
+import { customActionActivation } from "../components/actions/actions"
+import { clone, keysToID, removeDeleted } from "../components/helpers/array"
+import { isOutCleared } from "../components/helpers/output"
+import { sendMain } from "../IPC/main"
 import {
+    actionTags,
+    actions,
+    activePopup,
     activeProject,
+    alertMessage,
     alertUpdates,
+    audioChannelsData,
+    audioEffects,
     audioFolders,
+    audioPlaylists,
     autoOutput,
     autosave,
     calendarAddShow,
     categories,
+    cloudSyncData,
+    contentProviderData,
+    customMetadata,
     customizedIcons,
     dataPath,
-    defaultProjectName,
+    deletedDefaults,
     deletedShows,
     disabledServers,
     drawSettings,
@@ -20,33 +34,42 @@ import {
     drawerTabsData,
     driveData,
     driveKeys,
+    effects,
+    effectsLibrary,
+    emitters,
+    eqPresets,
+    errorHasOccurred,
     events,
     folders,
     formatNewShow,
     fullColors,
     gain,
+    globalRegexes,
+    globalTags,
     groupNumbers,
     groups,
-    imageExtensions,
     labelsDisabled,
     language,
     lockedOverlays,
     maxConnections,
     media,
-    mediaCache,
     mediaFolders,
     mediaOptions,
-    midiIn,
+    mediaTags,
+    metronome,
+    obsData,
     openedFolders,
-    os,
     outLocked,
     outputs,
     overlayCategories,
     overlays,
+    playerTags,
     playerVideos,
     ports,
-    presenterControllerKeys,
+    profiles,
+    projectTemplates,
     projects,
+    providerConnections,
     redoHistory,
     remotePassword,
     renamedShows,
@@ -64,6 +87,7 @@ import {
     special,
     splitLines,
     stageShows,
+    statusIndicator,
     styles,
     templateCategories,
     templates,
@@ -71,24 +95,42 @@ import {
     theme,
     themes,
     timeFormat,
+    timecode,
+    timeline,
     timers,
     transitionData,
     triggers,
     undoHistory,
+    usageLog,
+    variableTags,
     variables,
-    videoExtensions,
     videoMarkers,
-    volume,
-    webFavorites,
+    volume
 } from "../stores"
-import type { SaveListSettings, SaveListSyncedSettings } from "./../../types/Save"
+import type { SaveActions, SaveData, SaveList, SaveListSettings, SaveListSyncedSettings } from "./../../types/Save"
+import { audioStreams, companion } from "./../stores"
+import { socketDisconnect, syncWithCloud } from "./cloudSync"
+import { newToast, setStatus, startAutosave } from "./common"
 import { syncDrive } from "./drive"
-import { newToast } from "./messages"
 
-export function save(closeWhenFinished: boolean = false, backup: boolean = false) {
-    console.log("SAVING...")
+export function save(closeWhenFinished = false, customTriggers: SaveActions = {}) {
+    startAutosave() // reset auto save timer
 
-    let settings: { [key in SaveListSettings]: any } = {
+    // don't save again while saving
+    if (get(statusIndicator) === "saving") return
+
+    console.info("SAVING...")
+    if ((!customTriggers.autosave || !get(saved)) && !customTriggers.backup) {
+        setStatus("saving")
+        customActionActivation("save")
+    }
+
+    if (closeWhenFinished) {
+        alertMessage.set("actions.closing")
+        activePopup.set("alert")
+    }
+
+    const settings: { [key in SaveListSettings]: any } = {
         initialized: true,
         activeProject: get(activeProject),
         alertUpdates: get(alertUpdates),
@@ -100,29 +142,23 @@ export function save(closeWhenFinished: boolean = false, backup: boolean = false
         serverData: get(serverData),
         autosave: get(autosave),
         timeFormat: get(timeFormat),
-        defaultProjectName: get(defaultProjectName),
         // events: get(events),
-        showsPath: get(showsPath),
-        dataPath: get(dataPath),
+        showsPath: get(showsPath), // DEPRECATED
+        dataPath: get(dataPath), // DEPRECATED
         lockedOverlays: get(lockedOverlays),
         drawer: get(drawer),
         drawerTabsData: get(drawerTabsData),
         groupNumbers: get(groupNumbers),
         fullColors: get(fullColors),
         formatNewShow: get(formatNewShow),
-        imageExtensions: get(imageExtensions),
         labelsDisabled: get(labelsDisabled),
         language: get(language),
         mediaFolders: get(mediaFolders),
         mediaOptions: get(mediaOptions),
         openedFolders: get(openedFolders),
-        os: get(os),
         outLocked: get(outLocked),
         outputs: get(outputs),
         sorted: get(sorted),
-        styles: get(styles),
-        presenterControllerKeys: get(presenterControllerKeys),
-        playerVideos: get(playerVideos),
         remotePassword: get(remotePassword),
         resized: get(resized),
         slidesOptions: get(slidesOptions),
@@ -131,44 +167,37 @@ export function save(closeWhenFinished: boolean = false, backup: boolean = false
         theme: get(theme),
         transitionData: get(transitionData),
         // themes: get(themes),
-        videoExtensions: get(videoExtensions),
-        webFavorites: get(webFavorites),
         volume: get(volume),
         gain: get(gain),
+        audioChannelsData: get(audioChannelsData),
+        cloudSyncData: get(cloudSyncData),
         driveData: get(driveData),
         calendarAddShow: get(calendarAddShow),
+        metronome: get(metronome),
+        audioEffects: get(audioEffects),
+        eqPresets: get(eqPresets),
+        effectsLibrary: get(effectsLibrary),
         special: get(special),
+        timeline: get(timeline),
+        timecode: get(timecode),
+        contentProviderData: get(contentProviderData),
+        obsData: get(obsData)
     }
 
-    // settings exclusive to the local mashine (path names that shouldn't be synced with cloud)
-    let syncedSettings: { [key in SaveListSyncedSettings]: any } = {
-        categories: get(categories),
-        drawSettings: get(drawSettings),
-        groups: get(groups),
-        overlayCategories: get(overlayCategories),
-        scriptures: get(scriptures),
-        scriptureSettings: get(scriptureSettings),
-        templateCategories: get(templateCategories),
-        timers: get(timers),
-        variables: get(variables),
-        triggers: get(triggers),
-        audioStreams: get(audioStreams),
-        midiIn: get(midiIn),
-        videoMarkers: get(videoMarkers),
-        customizedIcons: get(customizedIcons),
-    }
+    const syncedSettings: { [key: string]: any } = {}
+    Object.entries(getSyncedSettings()).forEach(([key, store]) => {
+        syncedSettings[key] = get(store)
+    })
 
-    let allSavedData: any = {
-        path: get(showsPath),
-        dataPath: get(dataPath),
+    const allSavedData: SaveData = {
         // SETTINGS
         SETTINGS: settings,
         SYNCED_SETTINGS: syncedSettings,
         // SHOWS
         SHOWS: get(shows),
-        STAGE_SHOWS: get(stageShows),
+        STAGE: get(stageShows),
         // STORES
-        PROJECTS: { projects: get(projects), folders: get(folders) },
+        PROJECTS: { projects: get(projects), folders: get(folders), projectTemplates: get(projectTemplates) },
         OVERLAYS: get(overlays),
         TEMPLATES: get(templates),
         EVENTS: get(events),
@@ -176,35 +205,99 @@ export function save(closeWhenFinished: boolean = false, backup: boolean = false
         THEMES: get(themes),
         DRIVE_API_KEY: get(driveKeys),
         // CACHES SAVED TO MULTIPLE FILES
-        showsCache: clone(get(showsCache)),
-        scripturesCache: clone(get(scripturesCache)),
-        deletedShows: clone(get(deletedShows)),
-        renamedShows: clone(get(renamedShows)),
+        showsCache: get(showsCache),
+        scripturesCache: get(scripturesCache),
+        deletedShows: get(deletedShows),
+        renamedShows: get(renamedShows),
+        // CACHES
+        CACHE: { text: get(textCache) },
+        HISTORY: { undo: get(undoHistory), redo: get(redoHistory) },
+        USAGE: get(usageLog),
+        // SAVE INFO DATA
+        closeWhenFinished,
+        customTriggers
     }
+
+    const saveData = clone(allSavedData)
 
     deletedShows.set([])
     renamedShows.set([])
 
-    // CACHES
-    allSavedData = {
-        ...allSavedData,
-        CACHE: { media: get(mediaCache), text: get(textCache) },
-        HISTORY: { undo: get(undoHistory), redo: get(redoHistory) },
-    }
-
-    allSavedData.closeWhenFinished = closeWhenFinished
-    allSavedData.backup = backup
-    window.api.send(STORE, { channel: "SAVE", data: allSavedData })
+    if (customTriggers.backup) newToast("settings.backup_started")
+    // trigger toast before saving
+    setTimeout(() => sendMain(Main.SAVE, saveData))
 }
 
-export function saveComplete({ closeWhenFinished, backup }) {
-    saved.set(true)
-    newToast("$toast.saved")
+export function getSyncedSettings(): { [key in SaveListSyncedSettings]: any } {
+    return {
+        categories,
+        drawSettings,
+        groups,
+        overlayCategories,
+        scriptures,
+        scriptureSettings,
+        templateCategories,
+        styles,
+        profiles,
+        timers,
+        variables,
+        triggers,
+        audioStreams,
+        audioPlaylists,
+        midiIn: actions,
+        emitters,
+        playerVideos,
+        videoMarkers,
+        mediaTags,
+        playerTags,
+        actionTags,
+        variableTags,
+        customizedIcons,
+        companion,
+        globalTags,
+        globalRegexes,
+        customMetadata,
+        effects,
+        deletedDefaults
+    }
+}
 
-    if (backup) return
+export async function saveComplete({ closeWhenFinished, customTriggers }: { closeWhenFinished: boolean; customTriggers?: SaveActions }) {
+    const alreadySaved = get(saved)
+    if (!closeWhenFinished) {
+        if ((!customTriggers?.autosave || !alreadySaved) && !customTriggers?.backup) setStatus("saved", 1)
 
-    let mainFolderId = get(driveData)?.mainFolderId
-    if (!mainFolderId) {
+        saved.set(true)
+        console.info("SAVED!")
+    }
+
+    // cloud sync (only when autosaving or closing)
+    if ((customTriggers?.autosave || closeWhenFinished) && (get(providerConnections).churchApps || !get(driveData)?.mainFolderId)) {
+        if (closeWhenFinished) {
+            alertMessage.set("actions.closing")
+            activePopup.set("alert")
+        }
+
+        let shouldSync = true
+        if (customTriggers?.autosave) {
+            // don't sync if already saved or if a slide is currently outputted
+            if (alreadySaved || !isOutCleared("slide")) shouldSync = false
+        }
+
+        if (shouldSync) await syncWithCloud(false, closeWhenFinished)
+
+        if (closeWhenFinished) {
+            await socketDisconnect()
+            closeApp()
+        }
+        return
+    }
+
+    if (customTriggers?.backup || customTriggers?.reset) return
+
+    // DEPRECATED drive sync
+    const mainFolderId = get(driveData)?.mainFolderId
+    if (!mainFolderId || get(driveData)?.disabled === true || !Object.keys(get(driveKeys)).length) {
         if (closeWhenFinished) closeApp()
 
         return
@@ -213,6 +306,173 @@ export function saveComplete({ closeWhenFinished, backup }) {
     syncDrive(false, closeWhenFinished)
 }
 
+export function initializeClosing(skipPopup = false) {
+    // don't save automatically if an error has happened in case it breaks something
+    if (!skipPopup && (get(special).showClosePopup || get(errorHasOccurred))) activePopup.set("unsaved")
+    // "saved" does not count for all minor changes, but should be fine
+    else if (get(saved)) saveComplete({ closeWhenFinished: true })
+    else save(true)
+}
+
 export function closeApp() {
-    window.api.send(MAIN, { channel: "CLOSE" })
+    sendMain(Main.CLOSE)
+}
+
+// GET SAVED STATE
+
+export function unsavedUpdater() {
+    const cachedValues: { [key: string]: string } = {}
+    const s = { ...saveList, folders, projects, showsCache, stageShows, deletedShows, renamedShows }
+
+    let initialized = false
+    Object.keys(s).forEach((id) => {
+        if (!s[id]) return
+
+        s[id].subscribe((a: any) => {
+            if (customSavedListener[id] && a) {
+                a = customSavedListener[id](clone(a))
+                let stringObj
+                try {
+                    stringObj = JSON.stringify(a)
+                } catch {
+                    return
+                }
+                if (cachedValues[id] === stringObj) return
+
+                cachedValues[id] = stringObj
+            }
+
+            if (!initialized) return
+
+            saved.set(false)
+            if (id === "deletedShows" || id === "renamedShows") {
+                setTimeout(() => saved.set(false))
+            }
+        })
+
+        // set cached custom listener on load
+        let store = get(s[id])
+        if (customSavedListener[id] && store) {
+            store = customSavedListener[id](clone(store))
+            try {
+                cachedValues[id] = JSON.stringify(store)
+            } catch {}
+        }
+    })
+
+    initialized = true
+}
+
+const customSavedListener = {
+    showsCache: (data: Shows) => {
+        if (!data) return data
+        Object.keys(data).forEach((id) => {
+            if (!data[id]?.slides) return
+
+            delete (data[id] as any).timestamps
+            delete (data[id] as any).settings
+
+            Object.values(data[id].slides).forEach((slide) => {
+                if (!slide) return
+                delete slide.id
+            })
+        })
+
+        return data
+    },
+    projects: (data: Projects) => {
+        if (!data) return data
+        removeDeleted(keysToID(data)).forEach((a) => {
+            data[a.id].shows?.map((show) => {
+                delete show.layout
+            })
+        })
+
+        return data
+    }
+}
+
+const saveList: { [key in SaveList]: any } = {
+    initialized: null,
+    activeProject: null,
+    alertUpdates,
+    audioFolders,
+    autoOutput,
+    categories,
+    autosave,
+    timeFormat,
+    maxConnections,
+    ports,
+    disabledServers,
+    serverData,
+    events,
+    showsPath: null,
+    dataPath: null,
+    lockedOverlays: null,
+    drawer: null,
+    drawerTabsData: null,
+    drawSettings,
+    groupNumbers,
+    fullColors,
+    formatNewShow,
+    groups,
+    labelsDisabled,
+    language,
+    mediaFolders,
+    mediaOptions,
+    openedFolders: null,
+    outLocked: null,
+    outputs: null,
+    sorted: null,
+    styles,
+    profiles,
+    overlayCategories,
+    overlays,
+    playerVideos,
+    remotePassword,
+    resized: null,
+    scriptures,
+    scriptureSettings,
+    slidesOptions,
+    splitLines,
+    templateCategories,
+    templates,
+    timers,
+    variables,
+    triggers,
+    audioStreams,
+    audioPlaylists,
+    theme,
+    themes,
+    transitionData,
+    volume: null,
+    gain: null,
+    audioChannelsData,
+    midiIn: actions,
+    emitters,
+    videoMarkers,
+    mediaTags,
+    playerTags,
+    actionTags,
+    variableTags,
+    customizedIcons,
+    driveKeys,
+    cloudSyncData,
+    driveData,
+    calendarAddShow: null,
+    metronome: null,
+    audioEffects: null,
+    eqPresets: null,
+    effectsLibrary: null,
+    special,
+    timeline: null,
+    timecode: null,
+    companion: null,
+    globalTags,
+    globalRegexes: null,
+    customMetadata: null,
+    contentProviderData,
+    obsData: null,
+    effects,
+    deletedDefaults: null
 }

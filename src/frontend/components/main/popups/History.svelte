@@ -1,10 +1,9 @@
 <script lang="ts">
     import { redoHistory, undoHistory } from "../../../stores"
     import { redo, undo } from "../../helpers/history"
-    import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
     import { getDateAndTimeString, timeAgo } from "../../helpers/time"
-    import Button from "../../inputs/Button.svelte"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
     import Center from "../../system/Center.svelte"
 
     const INITIAL: any = { id: "initial", time: 0 }
@@ -46,6 +45,7 @@
         UPDATE_template_name: "Updated template name",
         UPDATE_template_color: "Updated template color",
         UPDATE_template_category: "Updated template category",
+        UPDATE_template_settings: "Updated template settings",
         UPDATE_player_video: "Updated player video",
         UPDATE_event: "Updated event",
         UPDATE_stage_item_style: "Updated stage item style",
@@ -55,6 +55,7 @@
         UPDATE_show_layout: "Updated show layout",
         UPDATE_show_key: "Changed show",
         UPDATE_global_group: "Updated global group",
+        UPDATE_tag: "Updated tag",
         UPDATE_settings_theme: "Updated settings: theme",
         UPDATE_settings_style: "Updated settings: style",
         UPDATE_settings_output: "Updated settings: output",
@@ -70,7 +71,7 @@
 
         slide: "Added slide",
         showMedia: "Added media to show",
-        showAudio: "Added audio to show",
+        showAudio: "Added audio to show"
     }
 
     function callUndo(index) {
@@ -95,53 +96,75 @@
     }
 
     function getItemId(item) {
+        if (item.version === 1) return getName[item.type]?.(item.value) || item.type
         if (item.id === "UPDATE") return item.id + "_" + item.location?.id
 
         return item.id
     }
+
+    const getName = {
+        store_create: (value: any) => `Created new ${value.id}`,
+        store_update: (value: any) => `Updated key ${value.key} in ${value.id}`,
+        store_delete: (value: any) => `Deleted key ${value.key} in ${value.id}`
+    }
 </script>
 
-{#if rHistory.length || uHistory.length}
-    {#each rHistory as item, i}
-        {@const itemId = getItemId(item)}
-        <Button on:click={() => callRedo(i)} style="opacity: 0.5;">
-            <p>
-                <span style={historyIdToString[itemId] ? "" : "opacity: 0.3;font-style: italic;"}>
-                    {historyIdToString[itemId] || itemId}
-                </span>
-                <span class="time" title={getDateAndTimeString(item.time || 0)}>{timeAgo(item.time || 0)}</span>
-            </p>
-        </Button>
-    {/each}
-    {#each uHistory as item, i}
-        {@const itemId = getItemId(item)}
-        <Button on:click={() => callUndo(i - 1)} outline={i === 0}>
-            <p>
-                <span style={historyIdToString[itemId] ? "" : "opacity: 0.3;font-style: italic;"}>
-                    {historyIdToString[itemId] || itemId}
-                </span>
-                <span class="time" title={getDateAndTimeString(item.time || 0)}>{timeAgo(item.time || 0)}</span>
-            </p>
-        </Button>
-    {/each}
+<MaterialButton class="popup-options" icon="delete" title="actions.clear_history" on:click={clearHistory} white />
 
-    <br />
-
-    <Button on:click={clearHistory} center dark>
-        <Icon id="delete" right />
-        <T id="actions.clear_history" />
-    </Button>
-    <!-- <div>
-        <p>Delete oldest automaticly when more than</p>
-        <NumberInput value={$historyCacheCount} on:change={(e) => historyCacheCount.set(e.detail)} buttons={false} />
-    </div> -->
-{:else}
-    <Center>
-        <T id="empty.general" />
-    </Center>
-{/if}
+<main class="history">
+    {#if rHistory.length || uHistory.length}
+        <div class="list">
+            {#each rHistory as item, i}
+                {@const itemId = getItemId(item)}
+                <MaterialButton style="opacity: 0.5;padding: 10px 20px;" on:click={() => callRedo(i)}>
+                    <p>
+                        <span style={historyIdToString[itemId] ? "" : "opacity: 0.3;font-style: italic;"}>
+                            {historyIdToString[itemId] || itemId}
+                        </span>
+                        <span class="time" data-title={getDateAndTimeString(item.time || 0)}>{timeAgo(item.time || 0)}</span>
+                    </p>
+                </MaterialButton>
+            {/each}
+            {#each uHistory as item, i}
+                {@const itemId = getItemId(item)}
+                <MaterialButton style="padding: 10px 20px;" on:click={() => callUndo(i - 1)} showOutline={i === 0}>
+                    <p>
+                        <span style={item.version || historyIdToString[itemId] ? "" : "opacity: 0.3;font-style: italic;"}>
+                            {historyIdToString[itemId] || itemId}
+                        </span>
+                        <span class="time" data-title={getDateAndTimeString(item.time || 0)}>{timeAgo(item.time || 0)}</span>
+                    </p>
+                </MaterialButton>
+            {/each}
+        </div>
+    {:else}
+        <Center faded>
+            <T id="empty.general" />
+        </Center>
+    {/if}
+</main>
 
 <style>
+    main {
+        display: flex;
+        flex-direction: column;
+        /* gap: 5px; */
+    }
+
+    .list {
+        background-color: var(--primary-darker);
+        border: 1px solid var(--primary-lighter);
+
+        border-radius: 8px;
+        padding: 10px 0;
+
+        display: flex;
+        flex-direction: column;
+    }
+    .list :global(button:nth-child(odd)) {
+        background-color: rgb(0 0 20 / 0.08) !important;
+    }
+
     p {
         width: 100%;
         display: flex;
@@ -155,7 +178,7 @@
     }
 
     p .time {
-        opacity: 0.8;
+        opacity: 0.5;
         font-size: 0.8em;
         font-style: italic;
     }

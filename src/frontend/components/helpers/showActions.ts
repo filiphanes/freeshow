@@ -1,53 +1,50 @@
+import type { ExifData } from "exif"
+import type { ICommonTagsResult } from "music-metadata/lib/type"
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist"
 import { get } from "svelte/store"
-import { MAIN, OUTPUT } from "../../../types/Channels"
-import type { OutSlide, Slide } from "../../../types/Show"
+import { OUTPUT } from "../../../types/Channels"
+import { Main } from "../../../types/IPC/Main"
+import type { Variable } from "../../../types/Main"
+import type { ProjectShowRef } from "../../../types/Projects"
+import type { Item, LayoutRef, OutSlide, Show, Slide, SlideAction, SlideData } from "../../../types/Show"
+import { clearAudio } from "../../audio/audioFading"
+import { AudioMicrophone } from "../../audio/audioMicrophone"
+import { AudioPlayer } from "../../audio/audioPlayer"
+import { requestMain, sendMain } from "../../IPC/main"
+import { isMainWindow, isOutputWindow } from "../../utils/common"
 import { send } from "../../utils/request"
-import { playPauseGlobal } from "../drawer/timers/timers"
-import {
-    activeEdit,
-    activePage,
-    activePopup,
-    activeProject,
-    activeShow,
-    activeTimers,
-    audioStreams,
-    driveData,
-    lockedOverlays,
-    media,
-    outLocked,
-    outputCache,
-    outputs,
-    overlays,
-    playingAudio,
-    projects,
-    selected,
-    showsCache,
-    slideTimers,
-    styles,
-    timers,
-    triggers,
-} from "./../../stores"
-import { clone } from "./array"
-import { clearAudio, playAudio, startMicrophone } from "./audio"
-import { getExtension, getFileName, getMediaStyle, getMediaType, removeExtension } from "./media"
-import { getActiveOutputs, isOutCleared, setOutput } from "./output"
+import { convertRSSToString, getRSS } from "../../utils/rss"
+import { runAction, slideHasAction } from "../actions/actions"
+import type { API_output_style } from "../actions/api"
+import { getCurrentTimerValue, getTimeUntilClock, playPauseGlobal } from "../drawer/timers/timers"
+import { getDynamicValue } from "../edit/scripts/itemHelpers"
+import { getTextLines } from "../edit/scripts/textStyle"
+import { clearBackground, clearOverlays, clearTimers } from "../output/clear"
+import { activeEdit, activeFocus, activePage, activeProject, activeShow, allOutputs, audioData, customMetadata, dictionary, dynamicValueData, focusMode, media, outLocked, outputDisplay, outputs, overlays, playingAudio, playingMetronome, projects, shows, showsCache, slideTimers, special, stageShows, styles, templates, timers, triggers, variables, videosData, videosTime } from "./../../stores"
+import { clone, keysToID, sortByName } from "./array"
+import { downloadOnlineMedia, getExtension, getFileName, getMedia, getMediaStyle, getMediaType, removeExtension } from "./media"
+import { defaultLayers, getActiveOutputs, getAllNormalOutputs, getFirstActiveOutput, getFirstOutput, getWindowOutputId, isOutCleared, refreshOut, setOutput, startFolderTimer } from "./output"
+import { getSetChars } from "./randomValue"
 import { loadShows } from "./setShow"
+import { getCustomMetadata, getGroupName, getLayoutRef } from "./show"
 import { _show } from "./shows"
-import { initializeMetadata } from "./show"
+import { addZero, getMonthName, getWeekday, joinTime, joinTimeBig, secondsToTime } from "./time"
+import { stopTimers } from "./timerTick"
+import { OutputHelper } from "./OutputHelper"
 
-const getProjectIndex: any = {
-    next: (index: number | null, shows: any) => {
+const getProjectIndex = {
+    next: (index: number | null, items: ProjectShowRef[]) => {
         // change active show in project
         if (index === null) return 0
-        index = shows.findIndex((_a: any, i: number) => i - 1 === index)
+        index = items.findIndex((_a, i) => i - 1 === index)
         return index === null || index < 0 ? null : index
     },
-    previous: (index: number | null, shows: any) => {
+    previous: (index: number | null, items: ProjectShowRef[]) => {
         // change active show in project
-        if (index === null) return shows.length - 1
-        index = shows.findIndex((_a: any, i: number) => i + 1 === index)
+        if (index === null) return items.length - 1
+        index = items.findIndex((_a, i) => i + 1 === index)
         return index === null || index < 0 ? null : index
-    },
+    }
 }
 
 export function checkInput(e: any) {
@@ -59,365 +56,301 @@ export function checkInput(e: any) {
     e.preventDefault()
     ;(document.activeElement as any)?.blur()
 
-    let selectItem: "next" | "previous" = e.key === "ArrowDown" ? "next" : "previous"
+    const selectItem: "next" | "previous" = e.key === "ArrowDown" ? "next" : "previous"
     selectProjectShow(selectItem)
 }
 
 export function selectProjectShow(select: number | "next" | "previous") {
-    let shows = get(projects)[get(activeProject)!].shows
-    let index: null | number = get(activeShow)?.index !== undefined ? get(activeShow)!.index! : null
-    let newIndex: number | null = typeof select === "number" ? select : getProjectIndex[select](index, shows)
+    const items = get(projects)[get(activeProject) || ""]?.shows || []
+    const index: null | number = (get(focusMode) ? get(activeFocus).index : get(activeShow)?.index) ?? null
+    const newIndex: number | null = !isNaN((select as any) || 0) ? Number(select || 0) : getProjectIndex[select](index, items)
 
-    if (newIndex === null || !shows[newIndex]) return
+    if (newIndex === null || !items[newIndex]) return
 
     // show
-    if (get(showsCache)[shows[newIndex].id]) swichProjectItem(newIndex, shows[newIndex].id)
+    if (!get(focusMode) && (items[newIndex].type || "show") === "show") {
+        // async waiting for show to load
+        setTimeout(async () => {
+            // preload show (so the layout can be changed)
+            await loadShows([items[newIndex].id])
+            if (get(showsCache)[items[newIndex].id]) swichProjectItem(newIndex, items[newIndex].id)
+        })
+    }
 
     // set active show in project list
-    if (newIndex !== index) activeShow.set({ ...shows[newIndex], index: newIndex })
+    if (get(focusMode)) activeFocus.set({ id: items[newIndex].id, index: newIndex, type: items[newIndex].type })
+    else activeShow.set({ ...items[newIndex], index: newIndex })
 }
 
 export function swichProjectItem(pos: number, id: string) {
-    let projectLayout: string = get(projects)[get(activeProject)!].shows[pos!].layout || ""
+    if (!get(showsCache)[id]?.layouts || !get(projects)[get(activeProject)!]?.shows?.[pos] || get(focusMode)) return
+    let projectLayout: string = get(projects)[get(activeProject)!].shows[pos].layout || ""
 
     // set active layout from project if it exists
     if (projectLayout) {
         if (!get(showsCache)[id].layouts[projectLayout]) projectLayout = Object.keys(get(showsCache)[id].layouts)[0]
         showsCache.update((a) => {
+            if (!a[id].settings) a[id].settings = { activeLayout: "", template: null }
             a[id].settings.activeLayout = projectLayout
             return a
         })
     }
 
     // set project layout
-    projects.update((a) => {
-        if (Object.keys(get(showsCache)[id].layouts).length < 2) delete a[get(activeProject)!].shows[pos!].layout
-        else a[get(activeProject)!].shows[pos!].layout = get(showsCache)[id].settings.activeLayout
-        return a
-    })
+    if (Object.keys(get(showsCache)[id].layouts)?.length > 1) {
+        projects.update((a) => {
+            if (Object.keys(get(showsCache)[id].layouts)?.length < 2) delete a[get(activeProject)!].shows[pos].layout
+            else a[get(activeProject)!].shows[pos].layout = get(showsCache)[id].settings?.activeLayout || ""
+            return a
+        })
+    }
 }
 
-export function getItemWithMostLines(slide: Slide) {
-    let amount: number = 0
+export function getItemWithMostLines(slide: Slide | { items: Item[] }) {
+    let amount = 0
     slide.items?.forEach((item) => {
-        console.log(item.lines)
-        let lines: number = item.lines?.filter((a) => a.text.filter((a) => a.value.length)?.length)?.length || 0
+        const lines: number = item?.lines?.filter((line) => line.text?.filter((text) => text.value !== undefined)?.length)?.length || 0
         if (lines > amount) amount = lines
     })
     return amount
 }
 
 // TODO: multiple outputs with different lines!
-function getOutputWithLines() {
-    let outs = getActiveOutputs()
+// get output with fewest lines
+export function getFewestOutputLines(updater = get(outputs)) {
+    const outs = getActiveOutputs(updater, true, true, true)
 
     let currentLines = 0
     outs.forEach((id: string) => {
-        let output = get(outputs)[id]
+        const output = updater[id]
         if (!output.style) return
 
-        let style = get(styles)[output.style]
+        const style = get(styles)[output.style]
         if (!style) return
-        let lines = style.lines
+        const styleLines = style.layers || defaultLayers
+        if (Array.isArray(styleLines) && !styleLines.includes("slide")) return
+        const lines = Number(style.lines || 0)
         if (!lines) return
 
-        if (lines > currentLines) currentLines = lines
+        if (!currentLines || lines < currentLines) currentLines = lines
     })
 
-    return currentLines
+    return Number(currentLines)
 }
 
-export function nextSlide(e: any, start: boolean = false, end: boolean = false, loop: boolean = false, bypassLock: boolean = false, customOutputId: string | null = null, nextAfterMedia: boolean = false) {
-    if (get(outLocked) && !bypassLock) return
-    if (document.activeElement instanceof window.HTMLElement) document.activeElement.blur()
+// get output with fewest revealed lines
+export function getFewestOutputLinesReveal(updater = get(outputs)) {
+    const outs = getActiveOutputs(updater, true, true, true)
 
-    let outputId = customOutputId || getActiveOutputs()[0]
-    let currentOutput: any = get(outputs)[outputId]
-    let slide: null | OutSlide = currentOutput.out?.slide || null
+    let currentLines = 0
+    outs.forEach((id: string) => {
+        const output = updater[id]
+        const lines = Number(output.out?.slide?.revealCount || 0)
+        if (!lines) return
 
-    // let layout: SlideData[] = GetLayout(slide ? slide.id : null, slide ? slide.layout : null)
-    let layout: any[] = _show(slide ? slide.id : "active")
-        .layouts(slide ? [slide.layout] : "active")
-        .ref()[0]
-    let isLastSlide: boolean = slide && layout ? slide.index === layout.length - 1 && !layout[slide.index].end : false
-    let index: null | number = null
+        if (!currentLines || lines < currentLines) currentLines = lines
+    })
 
-    // lines
-    let amountOfLinesToShow: number = getOutputWithLines() ? getOutputWithLines() : 0
-    let linesIndex: null | number = amountOfLinesToShow && slide ? slide.line || 0 : null
-    let showSlide: any = slide?.index !== undefined ? _show(slide.id).slides([layout[slide.index]?.id]).get()[0] : null
-    let slideLines: null | number = showSlide ? getItemWithMostLines(showSlide) : null
-    let currentLineStart: number = slideLines ? slideLines - (amountOfLinesToShow! % slideLines) : 0
-    let hasLinesEnded: boolean = slideLines === null || linesIndex === null ? true : slideLines <= amountOfLinesToShow || amountOfLinesToShow! * linesIndex >= currentLineStart
-    if (isLastSlide && !hasLinesEnded) isLastSlide = false
-
-    // TODO: active show slide index on delete......
-
-    // go to first slide in next project show ("Next after media" feature)
-    let isNotLooping = loop && slide?.index !== undefined && !layout[slide.index]?.data?.end
-    if ((isNotLooping || nextAfterMedia) && bypassLock && slide && isLastSlide) {
-        // check if it is last slide (& that slide does not loop to start)
-        goToNextShowInProject(slide, customOutputId)
-        return
-    }
-
-    // go to beginning if live mode & ctrl | no output | last slide active
-    if (get(activeShow) && (start || !slide || e?.ctrlKey || (isLastSlide && (get(activeShow)!.id !== slide?.id || get(showsCache)[get(activeShow)!.id]?.settings.activeLayout !== slide.layout)))) {
-        if (get(activeShow)?.type === "section") return goToNextProjectItem()
-
-        let id = loop ? slide?.id : get(activeShow)?.id
-        if (!id) return
-
-        // layout = GetLayout()
-        layout = _show(id).layouts("active").ref()[0]
-        if (!layout?.filter((a) => !a.data.disabled).length) return
-
-        index = 0
-        while (layout[index].data.disabled) index++
-
-        setOutput("slide", { id, layout: _show(id).get("settings.activeLayout"), index }, false, customOutputId)
-        updateOut(id, index, layout, !e?.altKey, customOutputId)
-        return
-    }
-
-    if (!slide || slide.id === "temp") return
-
-    let newSlideOut: any = { ...slide, line: 0 }
-    if (!hasLinesEnded) {
-        index = slide.index!
-        newSlideOut.line = linesIndex! + 1
-    } else {
-        // TODO: Check for loop to beginning slide...
-        index = getNextEnabled(slide.index!, end)
-    }
-    newSlideOut.index = index
-
-    // go to next show if end
-    if (index === null && get(activeShow)?.id === slide?.id && get(showsCache)[get(activeShow)?.id || ""]?.settings.activeLayout === slide.layout) {
-        if ([" ", "ArrowRight", "PageDown"].includes(e?.key)) goToNextProjectItem()
-        return
-    }
-
-    if (index !== null) {
-        setOutput("slide", newSlideOut, false, customOutputId)
-        updateOut(slide ? slide.id : "active", index, layout, !e?.altKey, customOutputId)
-    }
+    return Number(currentLines)
 }
 
-async function goToNextShowInProject(slide, customOutputId) {
-    if (!get(activeProject)) return
-
-    // get current project show
-    let currentProject = get(projects)[get(activeProject)!]
-    // this will get the first show in the project with this id, so it won't work properly with multiple of the same shows in a project
-    let projectIndex = currentProject.shows.findIndex((a) => a.id === slide!.id)
-    if (projectIndex < 0) return
-
-    let currentOutputProjectShowIndex = currentProject.shows[projectIndex]
-    if (currentOutputProjectShowIndex.id !== slide.id) return
-
-    let nextShowInProjectIndex = currentProject.shows.findIndex((a, i) => i > projectIndex && (a.type || "show") === "show")
-    if (nextShowInProjectIndex < 0) return
-
-    let nextShow = currentProject.shows[nextShowInProjectIndex]
-    await loadShows([nextShow.id])
-    let activeLayout = nextShow.layout || _show(nextShow.id).get("settings.activeLayout")
-    let layout: any[] = _show(nextShow.id).layouts([activeLayout]).ref()[0]
-
-    // let hasNextAfterMediaAction = layout[slide.index].data.actions?.nextAfterMedia
-    // if (!hasNextAfterMediaAction) return
-
-    setOutput("slide", { id: nextShow.id, layout: activeLayout, index: 0 }, false, customOutputId)
-    updateOut(nextShow.id, 0, layout, true, customOutputId)
-
-    // open next item in project (if current is open)
-    if (get(activeShow)?.index === projectIndex) {
-        activeShow.set({ ...nextShow, index: nextShowInProjectIndex })
+const triggerActionsBeforeOutput = {
+    change_output_style: (actionValue: any) => {
+        const layers = get(styles)[actionValue?.outputStyle]?.layers
+        if (!Array.isArray(layers)) return false
+        return !layers.includes("background")
     }
 }
-
-export function goToNextProjectItem() {
-    if (!get(activeProject) || typeof get(activeShow)?.index !== "number") return
-
-    let index: number = get(activeShow)!.index ?? -1
-    if (index + 1 < get(projects)[get(activeProject)!].shows.length) index++
-    if (index > -1 && index !== get(activeShow)?.index) activeShow.set({ ...get(projects)[get(activeProject)!].shows[index], index })
+function shouldTriggerBefore(action: any) {
+    return action.triggers?.find((trigger) => triggerActionsBeforeOutput[trigger]?.(action.actionValues?.[trigger]))
+}
+export function checkActionTrigger(layoutData: SlideData, slideIndex = 0) {
+    layoutData?.actions?.slideActions?.forEach((a) => {
+        if (shouldTriggerBefore(a)) runAction(a, { slideIndex })
+    })
 }
 
-export function goToPreviousProjectItem() {
-    if (!get(activeProject) || typeof get(activeShow)?.index !== "number") return
+export async function playPdf(data: OutSlide | null, next: boolean, loop = false) {
+    if (!data?.id || data?.type !== "pdf") return
 
-    let index: number = get(activeShow)!.index ?? get(projects)[get(activeProject)!].shows.length
-    if (index - 1 >= 0) index--
-    if (index > -1 && index !== get(activeShow)?.index) activeShow.set({ ...get(projects)[get(activeProject)!].shows[index], index })
+    GlobalWorkerOptions.workerSrc = "./assets/pdf.worker.min.mjs"
+    const loadingTask = getDocument(data.id)
+    const pdfDoc = await loadingTask.promise
+    const pages = pdfDoc.numPages
+    loadingTask.destroy()
+
+    let nextPage = data.page
+    if (nextPage === undefined) nextPage = next ? -1 : pages
+    nextPage += next ? 1 : -1
+
+    if (nextPage > pages - 1) {
+        if (!loop) return
+        nextPage = 0
+    }
+
+    const projectItem = get(projects)[get(activeProject) || ""]?.shows?.[get(activeShow)?.index || 0]
+    const name = data?.name || projectItem?.name
+
+    setOutput("slide", { type: "pdf", id: data.id, page: nextPage, pages, name })
+    clearBackground()
+
+    const timer = projectItem?.data?.timer || 0
+    if (timer) startFolderTimer(data.id, { type: "pdf", path: "" })
 }
 
-export function previousSlide(e: any) {
+// go to random slide in current project
+export function randomSlide() {
     if (get(outLocked)) return
-    if (document.activeElement instanceof window.HTMLElement) document.activeElement.blur()
 
-    let currentOutput: any = get(outputs)[getActiveOutputs()[0]]
-    let slide: null | OutSlide = currentOutput.out?.slide || null
-    // let layout: SlideData[] = GetLayout(slide ? slide.id : null, slide ? slide.layout : null)
-    let layout: any[] = _show(slide ? slide.id : "active")
-        .layouts(slide ? [slide.layout] : "active")
-        .ref()[0]
-    let activeLayout: string = _show(slide ? slide.id : "active").get("settings.activeLayout")
-    let index: number | null = slide?.index !== undefined ? slide.index - 1 : layout ? layout.length - 1 : null
-    if (index === null) {
-        if (get(activeShow)?.type === "section") goToPreviousProjectItem()
-        return
-    }
+    const currentOutput = getFirstActiveOutput()
+    const slide = currentOutput?.out?.slide || null
+    const currentShow = get(focusMode) ? get(activeFocus) : get(activeShow)
+    const showId = slide?.id || currentShow?.id
+    if (!showId) return
 
-    let activeShowLayout = get(showsCache)[get(activeShow)?.id || ""]?.settings?.activeLayout
-    if (index < 0 && activeShowLayout !== slide?.layout) {
-        slide = null
-        layout = _show("active").layouts("active").ref()[0]
-        activeLayout = activeShowLayout
-        index = (layout?.length || 0) - 1
-    }
+    const layoutId = slide?.layout || _show(showId).get("settings.activeLayout")
+    const layout = _show(showId).layouts([layoutId]).ref()[0]
 
-    // lines
-    let outputWithLines = getOutputWithLines()
-    let amountOfLinesToShow: number = outputWithLines ? outputWithLines : 0
-    let linesIndex: null | number = amountOfLinesToShow && slide ? slide.line || 0 : null
-    let hasLinesEnded: boolean = !slide || linesIndex === null || linesIndex < 1
+    const slideCount = layout?.length || 0
+    if (slideCount < 2) return
 
-    let line: number = linesIndex || 0
-    if (hasLinesEnded) {
-        if (index < 0 || !layout.slice(0, index + 1).filter((a) => !a.data.disabled).length) {
-            // go to previous show if out slide at start
-            if ((get(activeShow)?.id === slide?.id && activeShowLayout === slide?.layout) || get(activeShow)?.type === "section") {
-                if (["ArrowLeft", "PageUp"].includes(e?.key)) goToPreviousProjectItem()
-            }
-            return
-        }
+    const currentSlideIndex = slide?.index ?? -1
 
-        while (layout[index].data.disabled) index--
+    // get new random index that is not the currently selected one
+    let randomIndex = -1
+    do {
+        randomIndex = randomNumber(slideCount)
+    } while (randomIndex === currentSlideIndex)
 
-        // get slide line
-        let showSlide: any = _show(slide ? slide.id : "active")
-            .slides([layout[index].id])
-            .get()[0]
-        let slideLines: null | number = showSlide ? getItemWithMostLines(showSlide) : null
-        if (amountOfLinesToShow) line = slideLines ? Math.ceil(slideLines / amountOfLinesToShow) - 1 : 0
-    } else {
-        index = slide!.index!
-        line--
-    }
-
-    if (slide) setOutput("slide", { ...slide, index, line }, false)
-    else if (get(activeShow)) setOutput("slide", { id: get(activeShow)!.id, layout: activeLayout, index }, false)
-
-    updateOut(slide ? slide.id : "active", index, layout, !e?.altKey)
+    // play slide
+    const data = layout?.[randomIndex]?.data
+    checkActionTrigger(data, randomIndex)
+    // allow custom actions to trigger first
+    setTimeout(() => {
+        setOutput("slide", { id: showId, layout: layoutId, index: randomIndex }, false)
+        updateOut(showId, randomIndex, layout)
+    })
+}
+function randomNumber(end: number) {
+    return Math.floor(Math.random() * end)
 }
 
-function getNextEnabled(index: null | number, end: boolean = false): null | number {
-    if (index === null) return null
-
-    index++
-
-    let currentOutput: any = get(outputs)[getActiveOutputs()[0]]
-    let slide: null | OutSlide = currentOutput.out?.slide || null
-    let layout: any[] = _show(slide ? slide.id : "active")
-        .layouts(slide ? [slide.layout] : "active")
-        .ref()[0]
-
-    if (layout[index - 1]?.data.end) index = 0
-    if (!layout[index]) return null
-    if (index >= layout.length || !layout.slice(index, layout.length).filter((a) => !a.data.disabled).length) return null
-
-    while (layout[index].data.disabled && index < layout.length) index++
-
-    if (end) {
-        index = layout.length - 1
-        while (layout[index].data.disabled && index > 0) index--
-    }
-
-    return index
-}
-
-export function updateOut(showId: string, index: number, layout: any, extra: boolean = true, outputId: string | null = null) {
+export function updateOut(showId: string, index: number, layout: LayoutRef[], extra = true, specificOutputId = "", actionTimeout = 10) {
     if (get(activePage) !== "edit") activeEdit.set({ slide: index, items: [] })
 
     _show(showId).set({ key: "timestamps.used", value: new Date().getTime() })
     if (!layout) return
-    let data = layout[index]?.data
+    const data = layout[index]?.data
 
     // holding "alt" key will disable all extra features
     if (!extra || !data) return
 
     // trigger start show action first
-    if (data.actions?.startShow) {
-        startShow(data.actions.startShow?.id)
+    const startShowId = data.actions?.startShow?.id || data.actions?.slideActions?.find((a) => a.actionValues?.start_show)?.actionValues?.start_show?.id
+    if (startShowId) {
+        startShow(startShowId)
         return
     }
 
+    const bindings = data?.bindings || []
+
     // get output slide
-    let outputIds = outputId ? [outputId] : data.bindings?.length ? data.bindings : getActiveOutputs()
+    const outputIds = specificOutputId ? [specificOutputId] : bindings.length ? bindings : getActiveOutputs(get(outputs), true, false, true)
+
+    // WIP custom next slide timer duration (has to be changed on slide click & in preview as well)
+    // let outputWithLine = outputIds.find((id: string) => get(outputs)[id].out?.slide?.line !== undefined)
+    // let outSlide = get(outputs)[outputWithLine]?.out?.slide || {}
+    // let showSlide = outSlide.index !== undefined ? _show(outSlide.id).slides([layout[index].id]).get()[0] : null
+    // let slideLines = showSlide ? getItemWithMostLines(showSlide) : null
+    // let outputWithLines = getOutputWithLines() || 0
+    // let maxLines = slideLines && outSlide.index !== null ? (outputWithLines >= slideLines ? 0 : Math.ceil(slideLines / outputWithLines)) : 0
+    const duration = data.nextTimer
+    // if (maxLines) duration /= maxLines
+
     // find any selected output with no lines
-    let anyNotInLines = outputIds.find((id: string) => !get(outputs)[id].out?.slide?.line)
+    const outputAtLine = outputIds.find((id: string) => get(outputs)[id]?.out?.slide?.line)
     // actions will only trigger on index 0 if multiple lines
-    if (!anyNotInLines) return
+    if (outputAtLine) {
+        // restart any next slide timers
+        outputIds.map(nextSlideTimers)
+        return
+    }
 
     outputIds.map(activateActions)
 
-    function activateActions(outputId: string) {
-        let background = data.background
+    async function activateActions(outputId: string) {
+        let background = data.background || null
+
+        // get slide background
+        let isSlideBg = false
+        if (!background) {
+            const showSlide: Slide = _show(showId).slides([layout[index].id]).get()?.[0]
+            if (showSlide?.settings?.backgroundImage) {
+                background = showSlide.settings.backgroundImage
+                isSlideBg = true
+            }
+            // WIP remove layout ghost bg after actual slide bg (we don't need ghosts for slide backgrounds)
+        }
 
         // get ghost background
         if (!background) {
             layout.forEach((a, i) => {
                 if (i <= index && !a.data.disabled) {
-                    if (a.data.actions?.clearBackground) background = null
+                    if (slideHasAction(a.data?.actions, "clear_background")) background = null
                     else if (a.data.background) background = a.data.background
+
+                    const showMedia = _show(showId).get("media")?.[a.data.background || ""]
+                    const mediaData = get(media)[showMedia?.path || ""] || {}
+                    // WIP getMediaLayerType - use what is set in show only
+                    // const mediaType = getMediaLayerType(a.data.background || "", mediaData)
+                    if (showMedia && (showMedia?.loop === false || mediaData.videoType === "foreground")) background = null
                 }
             })
         }
 
         // background
-        if (background) {
-            let bg = _show(showId).get("media")[background!]
-            console.log(_show(showId).get(), _show(showId).get("media"))
-            let outputBg = get(outputs)[outputId]?.out?.background
-            let cloudId = get(driveData).mediaId
-            let bgPath = cloudId && cloudId !== "default" ? bg.cloud?.[cloudId] || bg.path : bg.path
-            let name = bg.name || removeExtension(getFileName(bgPath))
-            let extension = getExtension(bgPath)
-            let type = bg.type || getMediaType(extension)
+        if (background && (isSlideBg || _show(showId).get("media")?.[background])) {
+            const bg = isSlideBg ? { path: background } : _show(showId).get("media")[background]
+            const outputBg = get(outputs)[outputId]?.out?.background
+            const bgPath = bg?.path || bg?.id
+            const extension = getExtension(bgPath)
+            const type = bg.type || getMediaType(extension)
+            const m = type === "video" || type === "image" || type === "media" ? await getMedia(bgPath) : { path: bgPath, data: clone(get(media)[bgPath]) }
 
-            // get stored media files
-            // if (get(special).storeShowMedia && bg.base64) {
-            //     bgPath = `data:${type}/${extension};base64,${bg.base64}`
-            // }
+            if (bg && m && m.path !== outputBg?.path) {
+                const name = bg.name || removeExtension(getFileName(m.path))
 
-            if (bg && bgPath !== outputBg?.path) {
-                let mediaStyle = getMediaStyle(get(media)[bgPath], { name: "" })
-                console.log(mediaStyle)
-                let bgData: any = {
+                const outputStyle = get(styles)[get(outputs)[outputId]?.style || ""]
+                const mediaStyle = getMediaStyle(m.data, outputStyle)
+                mediaStyle.fit = m.data?.fit || ""
+                delete mediaStyle.fitOptions
+
+                // WIP getMediaLayerType - use what is set in show only
+                // const mediaType = getMediaLayerType(media.path, mediaStyle)
+                const loop = bg.loop !== false
+                const muted = bg.muted !== false
+
+                const bgData = {
                     name,
                     type,
-                    path: bgPath,
+                    path: m.path,
                     cameraGroup: bg.cameraGroup || "",
-                    id: bg.id || bgPath, // path = cameras
-                    muted: bg.muted !== false,
-                    loop: bg.loop !== false,
+                    id: bg.id || m.path, // path = cameras
+                    loop,
+                    muted,
                     ...mediaStyle,
+                    ignoreLayer: mediaStyle.videoType === "foreground",
+                    bindings
                 }
 
-                // outBackground.set(bgData)
-                console.log(bg, bgData)
                 setOutput("background", bgData, false, outputId)
             }
         }
 
         // mics
         if (data.mics) {
-            data.mics.forEach((mic: any) => {
-                // setTimeout(() => {
-                //     setMicState.set({ id: mic.id, muted: false })
-                // }, 10 * i)
-                startMicrophone(mic)
+            data.mics.forEach((mic) => {
+                AudioMicrophone.start(mic.id, { name: mic.name })
             })
         }
 
@@ -425,38 +358,41 @@ export function updateOut(showId: string, index: number, layout: any, extra: boo
         if (data.audio) {
             // let clear action trigger first
             setTimeout(() => {
-                data.audio.forEach((audio: string) => {
-                    let a = clone(_show(showId).get("media")[audio])
-                    let cloudId = get(driveData).mediaId
-                    if (cloudId && cloudId !== "default") a.path = a.cloud?.[cloudId] || a.path
+                data.audio?.forEach((audio: string) => {
+                    const a = clone(_show(showId).get("media")?.[audio] || {})
+                    if (!a) return
 
-                    if (a) playAudio(a, false)
+                    // don't start from 0 again if already playing
+                    if (AudioPlayer.getPlaying(a.path)) return
+
+                    AudioPlayer.start(a.path, { name: a.name }, { pauseIfPlaying: false })
                 })
+            }, 200)
+        }
+
+        // effects
+        if (data.effects?.length) {
+            // let clear action trigger first
+            setTimeout(() => {
+                setOutput("effects", data.effects, false, outputId, true)
             }, 200)
         }
 
         // overlays
         if (data.overlays?.length) {
-            // send overlays again, because it sometimes don't have it for some reason
-            send(OUTPUT, ["OVERLAYS"], get(overlays))
+            // let clear action trigger first
+            setTimeout(() => {
+                // send overlays again, because it sometimes don't have it for some reason
+                send(OUTPUT, ["OVERLAYS"], get(overlays))
 
-            setOutput("overlays", data.overlays, false, outputId, true)
+                setOutput("overlays", data.overlays, false, outputId, true)
+            }, 200)
         }
 
         // nextTimer
-        // clear any active slide timers
-        Object.keys(get(slideTimers)).forEach((id) => {
-            if (outputIds.includes(id)) get(slideTimers)[id].timer?.clear()
-        })
+        nextSlideTimers(outputId)
 
-        if ((data.nextTimer || 0) > 0) {
-            // outTransition.set({ duration: data.nextTimer })
-            setOutput("transition", { duration: data.nextTimer }, false, outputId)
-        } else {
-            // outTransition.set(null)
-            setOutput("transition", null, false, outputId)
-        }
-
+        // DEPRECATED since <= 1.1.6, but still in use
         // actions per output
         if (data.actions) {
             if (data.actions.clearBackground) setOutput("background", null, false, outputId)
@@ -465,79 +401,183 @@ export function updateOut(showId: string, index: number, layout: any, extra: boo
     }
 
     // actions
+    // DEPRECATED since <= 1.1.6, but still in use
     if (data.actions) {
         // clear first
-        if (data.actions.stopTimers) activeTimers.set([])
+        if (data.actions.stopTimers) stopTimers()
         if (data.actions.clearAudio) clearAudio()
 
         // startShow is at the top
-        if (data.actions.trigger) activateTrigger(get(triggers)[data.actions.trigger])
-        if (data.actions.audioStream) startAudioStream(data.actions.audioStream)
-        if (data.actions.sendMidi) sendMidi(_show(showId).get("midi")[data.actions.sendMidi])
+        if (data.actions.trigger) activateTrigger(data.actions.trigger)
+        if (data.actions.audioStream) AudioPlayer.start(data.actions.audioStream, { name: "" })
+        // if (data.actions.sendMidi) sendMidi(_show(showId).get("midi")[data.actions.sendMidi])
         // if (data.actions.nextAfterMedia) // go to next when video/audio is finished
-        if (data.actions.outputStyle) changeOutputStyle(data.actions.outputStyle, data.actions.styleOutputs)
-        if (data.actions.startTimer) playSlideTimers({ showId: showId, slideId: layout[index].id })
+        if (data.actions.outputStyle) changeOutputStyle(data.actions as any)
+        if (data.actions.startTimer) playSlideTimers({ showId, slideId: layout[index].id, overlayIds: data.overlays || [] })
     }
+
+    if (data.actions?.slideActions?.length) {
+        // let values update
+        setTimeout(() => {
+            playSlideActions(data.actions!.slideActions!, outputIds, index)
+        }, actionTimeout)
+    } else playOutputStyleTemplateActions(outputIds)
+
+    function nextSlideTimers(outputId) {
+        // clear any active slide timers
+        Object.keys(get(slideTimers)).forEach((id) => {
+            if (outputIds.includes(id)) get(slideTimers)[id].timer?.clear()
+        })
+
+        if ((duration || 0) > 0) {
+            // outTransition.set({ duration })
+            setOutput("transition", { duration }, false, outputId)
+        } else {
+            clearTimers(outputId, false)
+        }
+    }
+}
+
+const runPerOutput = ["clear_background", "clear_overlays"]
+function playSlideActions(slideActions: SlideAction[], outputIds: string[] = [], slideIndex = -1) {
+    slideActions = clone(slideActions)
+
+    // run these actions on each active output
+    if (outputIds.length > 1) {
+        runPerOutput.forEach((id) => {
+            const existingIndex = slideActions.findIndex((a) => a.triggers?.[0] === id)
+            if (existingIndex < 0) return
+
+            outputIds.forEach((outputId) => {
+                if (id.includes("background")) setOutput("background", null, false, outputId)
+                else if (id.includes("overlays")) clearOverlays(outputId)
+            })
+            slideActions.splice(existingIndex, 1)
+        })
+    }
+
+    slideActions.forEach((a) => {
+        // no need to "re-run" actions triggered right before output
+        if (shouldTriggerBefore(a)) return
+
+        runAction(a, { slideIndex })
+    })
+
+    playOutputStyleTemplateActions(outputIds)
+}
+
+// play any output style template actions
+function playOutputStyleTemplateActions(outputIds: string[]) {
+    outputIds.forEach((outputId) => {
+        const outputStyleId = get(outputs)[outputId]?.style || ""
+        if (!outputStyleId) return
+
+        const styleTemplateId = get(styles)[outputStyleId]?.template || ""
+        if (!styleTemplateId) return
+
+        const templateSettings = get(templates)[styleTemplateId]?.settings?.actions || []
+        if (!templateSettings?.length) return
+
+        templateSettings?.forEach((action) => runAction(action))
+    })
+}
+
+export function startShowSync(showId: string) {
+    startShow(showId)
 }
 
 export async function startShow(showId: string) {
     if (!showId) return
 
-    let show = await loadShows([showId])
-    if (show !== "loaded") return
-
-    let activeLayout = get(showsCache)[showId].settings?.activeLayout || ""
+    await loadShows([showId])
+    if (!get(showsCache)[showId]) return
+    const activeLayout = get(showsCache)[showId].settings?.activeLayout || ""
 
     // slideClick() - Slides.svelte
-    let slideRef: any = _show(showId).layouts("active").ref()[0]
-    updateOut(showId, 0, slideRef)
-    setOutput("slide", { id: showId, layout: activeLayout, index: 0, line: 0 })
+    const slideRef = getLayoutRef(showId)
+
+    // get first non-disabled slide
+    let index = 0
+    while (slideRef[index] && slideRef[index]?.data?.disabled) index++
+    if (!slideRef[index]) return
+
+    setOutput("slide", { id: showId, layout: activeLayout, index, line: 0 })
+    // timeout has to be 1200 to let output data update properly (in case slide has special actions)
+    updateOut(showId, index, slideRef, true, "", 1200)
 }
 
-export function changeOutputStyle(styleId: string, styleOutputs: any = {}) {
-    let type = styleOutputs.type || "active"
-    let outputsList = styleOutputs.outputs
+export function changeOutputStyle(data: API_output_style) {
+    // pre 1.5.0 (deprecated)
+    let outputStyle: string | undefined = (data as any).outputStyle
+    const styleOutputs: any = (data as any).styleOutputs
+    if (outputStyle || styleOutputs) {
+        const type = styleOutputs?.type || "active"
+        const outputsList = styleOutputs?.outputs || []
 
-    let chosenOutputs = getActiveOutputs(get(outputs), type === "active")
-    chosenOutputs.forEach(changeStyle)
+        const chosenOutputs = getActiveOutputs(get(outputs), type === "active", true, true)
+        chosenOutputs.forEach(changeStyle)
 
-    function changeStyle(outputId: string) {
-        if (type === "specific") styleId = outputsList[outputId]
-        if (!styleId) return
+        function changeStyle(outputId: string) {
+            if (type === "specific") outputStyle = outputsList[outputId]
+            if (!outputStyle) return
 
-        outputs.update((a) => {
-            a[outputId].style = styleId
+            outputs.update((a) => {
+                a[outputId].style = outputStyle
+                return a
+            })
+        }
 
-            return a
-        })
+        refreshOut()
+        return
     }
-}
 
-export function playNextGroup(globalGroupIds: string[], { showRef, outSlide, currentShowId }, extra: boolean = true) {
-    console.log(globalGroupIds)
-    // TODO: get groups from midi!!!
-    if (!globalGroupIds.length || get(outLocked)) return
-
-    // play first matching group
-    let nextAfterOutput = undefined
-    let index = undefined
-    showRef.forEach((ref) => {
-        // if (ref.id !== slideId) return
-        if (!globalGroupIds.includes(ref.id)) return
-
-        // get next slide if global group is outputted
-        if (index === undefined) index = ref.layoutIndex
-        if (outSlide?.index === undefined || nextAfterOutput || ref.layoutIndex <= outSlide.index) return
-
-        nextAfterOutput = ref.layoutIndex
+    const outputIds = data.outputId ? [data.outputId] : getAllNormalOutputs().map((a) => a.id)
+    outputs.update((a) => {
+        outputIds.forEach((outputId) => {
+            if (!a[outputId]) return
+            a[outputId].style = data.styleId || ""
+        })
+        return a
     })
 
-    if (nextAfterOutput) index = nextAfterOutput
+    refreshOut()
+}
+
+function playGroup(globalGroupIds: string[], { showRef, outSlide, currentShowId }, extra = true, direction: "next" | "previous" = "next") {
+    if (!globalGroupIds.length || get(outLocked)) return
+
+    let targetIndex
+    let fallbackIndex
+    let firstMatchingGroup
+
+    showRef.forEach((ref) => {
+        if (!globalGroupIds.includes(ref.id) || ref.data?.disabled) return
+
+        if (firstMatchingGroup === undefined) firstMatchingGroup = ref.layoutIndex
+
+        if (direction === "next") {
+            // play first matching group after current
+            if (outSlide?.index === undefined || targetIndex !== undefined || ref.layoutIndex <= outSlide.index) return
+            targetIndex = ref.layoutIndex
+        } else {
+            // play last matching group before current
+            fallbackIndex = ref.layoutIndex // track last for looping
+            if (outSlide?.index === undefined || ref.layoutIndex >= outSlide.index) return
+            targetIndex = ref.layoutIndex
+        }
+    })
+
+    const index = targetIndex ?? fallbackIndex ?? firstMatchingGroup
     if (index === undefined) return
 
     // WIP duplicate of "slideClick" in Slides.svelte
-    updateOut(currentShowId, index, showRef, extra)
-    setOutput("slide", { id: currentShowId, layout: _show(currentShowId).get("settings.activeLayout"), index, line: 0 })
+    const data = showRef[index]?.data
+    checkActionTrigger(data, index)
+    // allow custom actions to trigger first
+    setTimeout(() => {
+        setOutput("slide", { id: currentShowId, layout: _show(currentShowId).get("settings.activeLayout"), index, line: 0 })
+        updateOut(currentShowId, index, showRef, extra, "")
+    })
 
     setTimeout(() => {
         // defocus search input
@@ -547,169 +587,674 @@ export function playNextGroup(globalGroupIds: string[], { showRef, outSlide, cur
     return true
 }
 
-// go to next slide if current output slide has nextAfterMedia action
-let nextActive = false
-export function checkNextAfterMedia(endedId: string, type: "media" | "audio" | "timer" = "media") {
-    if (nextActive) return
-    nextActive = true
+export function playNextGroup(globalGroupIds: string[], { showRef, outSlide, currentShowId }, extra = true) {
+    return playGroup(globalGroupIds, { showRef, outSlide, currentShowId }, extra, "next")
+}
 
-    let outputId = getActiveOutputs(get(outputs), true, true)[0]
+export function playPreviousGroup(globalGroupIds: string[], { showRef, outSlide, currentShowId }, extra = true) {
+    return playGroup(globalGroupIds, { showRef, outSlide, currentShowId }, extra, "previous")
+}
+
+// go to next slide if current output slide has nextAfterMedia action
+const nextActive: string[] = []
+export async function checkNextAfterMedia(endedId: string, type: "media" | "audio" | "timer" = "media", outputId = "") {
+    if (nextActive.includes(outputId)) return false
+
+    nextActive.push(outputId)
+    setTimeout(() => {
+        nextActive.splice(nextActive.indexOf(outputId), 1)
+    }, 600) // MAKE SURE NEXT SLIDE HAS TRANSITIONED
+
+    if (!outputId) outputId = getFirstActiveOutput()?.id || ""
     if (!outputId) return false
 
-    let currentOutput: any = get(outputs)[outputId]
+    const currentOutput = get(outputs)[outputId]
     if (!currentOutput) return false
 
-    let slideOut = currentOutput.out?.slide
+    const slideOut = currentOutput.out?.slide
     if (!slideOut) return false
 
-    let layoutSlide = _show(slideOut.id).layouts([slideOut.layout]).ref()[0][slideOut.index]
+    const layoutSlide = _show(slideOut.id).layouts([slideOut.layout]).ref()[0]?.[slideOut.index ?? -1]
     if (!layoutSlide) return false
 
     // check that current slide has the ended media!
     if (type === "media" || type === "audio") {
-        let showMedia = _show(slideOut.id).media().get()
-        let currentMediaId = showMedia.find((a) => a.path === endedId)?.key
+        const showMedia = _show(slideOut.id).media().get()
+        // find all matching paths because some slides with same background might have different media ids
+        let allMediaIds: string[] = []
+        for (const m of showMedia) {
+            const localPath = await downloadOnlineMedia(m.path)
+            if (localPath === endedId) allMediaIds.push(m.key)
+        }
 
         // don't go to next if current slide don't has outputted media
         if (type === "media") {
-            if (layoutSlide.data?.background !== currentMediaId) return false
+            if (!allMediaIds.includes(layoutSlide.data?.background || "")) return false
         } else if (type === "audio") {
-            if (!layoutSlide.data?.audio.find((id) => id === currentMediaId)) return false
+            if (!layoutSlide.data?.audio?.find((id) => allMediaIds.includes(id))) return false
         }
     } else if (type === "timer") {
-        let slide = _show(slideOut.id).get("slides")[layoutSlide.id]
-        let slideTimer = slide.items.find((a) => a.type === "timer" && a.timerId === endedId)
+        const slide = _show(slideOut.id).get("slides")?.[layoutSlide.id]
+        const slideTimer = slide?.items?.find((a) => a.type === "timer" && (a.timer?.id || a.timerId) === endedId)
         if (!slideTimer) return false
     }
 
-    let nextAfterMedia = layoutSlide?.data?.actions?.nextAfterMedia
+    const nextAfterMedia = layoutSlide?.data?.actions?.nextAfterMedia
     if (!nextAfterMedia) return false
 
-    setTimeout(() => {
-        nextSlide(null, false, false, false, true, outputId, true)
-
-        setTimeout(() => {
-            nextActive = false
-        }, 200)
-    }, 500) // has to be higher on low end devices
+    // WIP PAUSE PLAYING VIDEO WHEN ENDED, so it does not loop to start
+    OutputHelper.advanceOutput(outputId, "", { playNext: true })
 
     return true
 }
 
-function playSlideTimers({ showId, slideId }) {
-    if (showId === "active") showId = get(activeShow)?.id
-    let showSlides: any[] = _show(showId).slides().get()
+export function playSlideTimers({ showId = "active", slideId = "", overlayIds = [] as string[] }) {
+    if (!slideId) {
+        const outSlide: OutSlide | null = getFirstOutput()?.out?.slide || null
+        if (!outSlide) return
 
-    // find all timers in current slide
-    showSlides.forEach((slide) => {
-        if (slide.id !== slideId) return
-        let items = slide.items
-        items.forEach((item) => {
-            if (item.type === "timer" && item.timerId) playPauseGlobal(item.timerId, get(timers)[item.timerId], true)
-        })
+        showId = outSlide.id || ""
+
+        const layoutRef = _show(showId).layouts([outSlide.layout]).ref()[0]
+        if (!layoutRef) return
+        slideId = layoutRef[outSlide.index ?? -1]?.id || ""
+    }
+
+    const showSlides: { [key: string]: Slide } = _show(showId).get("slides") || {}
+    const slide = showSlides[slideId]
+    if (!slide) return
+
+    // find all timers in current slide & any overlay placed on the slide
+    const slideItems = slide.items || []
+    const allOverlayItems = overlayIds.map((id: string) => get(overlays)[id]?.items).flat()
+    const items = [...slideItems, ...allOverlayItems]
+
+    items.forEach((item) => {
+        if (item?.type !== "timer") return
+        const timerId = item.timer?.id || item.timerId || ""
+        playPauseGlobal(timerId, get(timers)[timerId], true)
     })
 }
 
 export function sendMidi(data: any) {
-    send(MAIN, ["SEND_MIDI"], data)
+    sendMain(Main.SEND_MIDI, data)
 }
 
-export function clearOverlays(outputId: string = "") {
-    outputId = outputId || getActiveOutputs()[0]
-    let outOverlays: string[] = get(outputs)[outputId]?.out?.overlays || []
-    outOverlays = outOverlays.filter((id) => get(overlays)[id]?.locked)
-    setOutput("overlays", outOverlays)
-    lockedOverlays.set([])
+export function activateTriggerSync(triggerId: string) {
+    activateTrigger(triggerId)
 }
 
-// TODO: output/clearButtons
-export function clearAll(button: boolean = false) {
-    if (get(outLocked)) return
-    if (!button && (get(activePopup) || get(selected).id || get(activeEdit).items.length)) return
+export async function activateTrigger(triggerId: string): Promise<string> {
+    const trigger = get(triggers)[triggerId]
+    if (!trigger) return ""
 
-    let allCleared = isOutCleared(null) && !Object.keys(get(playingAudio)).length
-    if (allCleared) return
-
-    // TODO: audio
-    if (!get(outputCache)) outputCache.set(clone(get(outputs)))
-
-    // clearVideo()
-    setOutput("background", null)
-    setOutput("slide", null)
-    clearOverlays()
-    clearAudio()
-    // clearTimers()
-    setOutput("transition", null)
-}
-
-export function activateTrigger(trigger) {
-    if (!customTriggers[trigger?.type]) {
-        console.log("Missing trigger:", trigger.type)
-        return
+    if (!customTriggers[trigger.type]) {
+        console.error("Missing trigger:", trigger.type)
+        return "error"
     }
 
-    customTriggers[trigger.type](trigger.value)
+    return customTriggers[trigger.type](trigger.value)
 }
 
 const customTriggers = {
-    http: (value: string) => {
-        fetch(value, { method: "GET" })
-            // .then((response) => response.json())
-            // .then((json) => console.log(json))
-            .catch((err) => {
-                console.error("Could not send HTTP request:", err)
-            })
-    },
-}
-
-export function startAudioStream(stream) {
-    let url = stream.value || get(audioStreams)[stream.id]?.value
-
-    playAudio({ path: url, name: stream.name })
+    http: (value: string): Promise<string> => {
+        return new Promise((resolve) => {
+            fetch(value, { method: "GET" })
+                .then((r) => {
+                    if (!r.ok) return resolve("error")
+                    resolve("success")
+                })
+                // .then((response) => response.json())
+                // .then((json) => console.log(json))
+                .catch((err) => {
+                    console.error("Could not send HTTP request:", err)
+                    resolve("error")
+                })
+        })
+    }
 }
 
 // DYNAMIC VALUES
 
+const commonOnly = ["time_str", "project_section_time", "show_name_next", "show_text_full", "slide_text_", "layout_notes", "slide_group_upcoming", "slide_notes_next", "exif_", "audio_subtitle", "audio_genre", "audio_year", "audio_volume"]
 export const dynamicValueText = (id: string) => `{${id}}`
-export function getDynamicIds() {
-    let mainValues = Object.keys(dynamicValues)
-    let metaValues = Object.keys(initializeMetadata({})).map((id) => `meta_` + id)
+export function getDynamicIds(noVariables = false, mode: null | "scripture" = null, showAll: boolean = true): string[] {
+    const mainValues = Object.keys(dynamicValues).filter((id) => (showAll ? true : !commonOnly.find((cId) => id.startsWith(cId))))
+    const metaValues = showAll ? Object.keys(getCustomMetadata()).map((id) => `meta_${id.replaceAll(" ", "_").toLowerCase()}`) : []
 
-    return [...mainValues, ...metaValues]
+    const mergedValues = [...(mode === "scripture" ? Object.keys(scriptureDynamicValues) : []), ...mainValues, ...metaValues]
+    if (noVariables) return mergedValues
+
+    const timersList: string[] = []
+    sortByName(Object.values(get(timers)))
+        .filter((a) => a.name)
+        .forEach(({ name }) => {
+            timersList.push(`timer_${getVariableNameId(name)}`)
+            if (showAll) timersList.push(`timer_m_${getVariableNameId(name)}`)
+            if (showAll) timersList.push(`timer_s_${getVariableNameId(name)}`)
+        })
+
+    const rssValues = sortByName(get(special).dynamicRSS || [])
+        .filter((a) => a.name)
+        .map(({ name }) => `rss_${getVariableNameId(name)}`)
+
+    if (timersList.length) mergedValues.push(...timersList)
+    if (rssValues.length) mergedValues.push(...rssValues)
+    mergedValues.push(...getVariablesIds(showAll))
+    return mergedValues
 }
 
-export function replaceDynamicValues(text: string, { showId, layoutId, slideIndex }: any) {
-    let show = _show(showId).get()
-    if (!show) return text
+export function getVariablesIds(showAll: boolean = false) {
+    // WIP sort by type?
+    const variablesList = sortByName(Object.values<Variable>(get(variables)).filter((a) => a?.name))
+    const variableValues = variablesList.filter((a) => a.type !== "text_set").map(({ name }) => `$${getVariableNameId(name)}`)
+    const variableSetNameValues = variablesList.filter((a) => a.type === "random_number" && (a.sets?.length || 0) > 1).map(({ name }) => `variable_set_${getVariableNameId(name)}`)
+    const randomNumberVariableHistory = showAll ? variablesList.filter((a) => a.type === "random_number").map(({ name }) => `$${getVariableNameId(name)}_history`) : []
 
-    getDynamicIds().forEach((id) => {
-        let newValue = getDynamicValue(id, show)
-        text = text.replaceAll(dynamicValueText(id), newValue)
+    const variableTextSets: string[] = []
+    variablesList
+        .filter((a) => a.type === "text_set")
+        .forEach((set) => {
+            const name = `$` + getVariableNameId(set.name)
+            if (showAll) variableTextSets.push(name) // list all sets at once
+            set.textSetKeys?.filter(Boolean).forEach((key) => {
+                variableTextSets.push(`${name}__${getVariableNameId(key)}`)
+            })
+        })
+
+    return [...variableValues, ...variableSetNameValues, ...randomNumberVariableHistory, ...variableTextSets]
+}
+
+export function getVariableValue(dynamicId: string, ref: any = null): string | string[] {
+    if (dynamicId.includes("variable_set_")) {
+        const nameId = dynamicId.slice(13)
+        const variable = Object.values(get(variables)).find((a) => getVariableNameId(a.name) === nameId)
+        if (variable?.type !== "random_number") return ""
+
+        return variable.setName || ""
+    }
+
+    if (dynamicId.includes("$") || dynamicId.includes("variable_")) {
+        const nameId = dynamicId.includes("$") ? dynamicId.slice(1) : dynamicId.slice(9)
+        let variable = Object.values(get(variables)).find((a) => getVariableNameId(a.name) === nameId)
+
+        if (!variable && nameId.endsWith("_history")) {
+            const baseNameId = nameId.slice(0, -8)
+            variable = Object.values(get(variables)).find((a) => getVariableNameId(a.name) === baseNameId)
+            if (variable && variable.type === "random_number") {
+                const multipleSets = (variable.sets?.length || 0) > 1
+                return variable.setLog?.map(({ name, number }) => `${multipleSets ? `${name}: ` : ""}${number}`).join("<br>") || ""
+            }
+        }
+        if (!variable && nameId.includes("__")) {
+            const textSetId = nameId.slice(0, nameId.indexOf("__")).replace(/#\d+/, "")
+            variable = Object.values(get(variables)).find((a) => getVariableNameId(a.name) === textSetId)
+        }
+        if (!variable) return ""
+
+        if (variable.type === "number") return Number(variable.number || 0).toString()
+        if (variable.type === "random_number") return (variable.number || 0).toString().padStart(getSetChars(variable.sets), "0")
+        if (variable.type === "text_set") {
+            // list all entires
+            if (!nameId.includes("__")) {
+                return (variable.textSets || [])
+                    .map((set) => {
+                        return Object.values(set).join(", ")
+                    })
+                    .join("<br>")
+            }
+
+            const setIndex = variable.activeTextSet ?? 0
+            const setId = nameId.slice(nameId.indexOf("__") + 2)
+            const setName = variable.textSetKeys?.find((name) => getVariableNameId(name) === setId) || ""
+            return [variable.textSets?.[setIndex]?.[setName] || "", ...(variable.textSets?.map((set) => set[setName] || "") || [])]
+        }
+
+        if (variable.enabled === false) return ""
+        if (variable.text?.includes(dynamicId) || !ref) return variable.text || ""
+        return replaceDynamicValues(variable.text || "", ref)
+    }
+
+    return ""
+}
+
+// Helper to escape characters like $, *, +, etc.
+const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+// This pattern breaks down as:
+// \{           -> Opening brace
+// ${id}        -> Your variable
+// (?:#(\d+))?  -> Optional group 1: the number after #
+// (?:\|(.*?))? -> Optional group 2: the fallback after |
+// \}           -> Closing brace
+const createRegex = (id: string) => {
+    // Escape the ID so the '$' isn't treated as "End of Line"
+    const safeId = escapeRegExp(id)
+    return new RegExp(`\\{${safeId}(?:#(\\d+))?(?:\\|([^}]*))?\\}`, "g")
+}
+
+/** Check if the pattern exists **/
+const exists = (str: string, id: string) => createRegex(id).test(str)
+
+/** Get all numbers (e.g., [null, 2, 100, 5, null]) **/
+// const getNumbers = (str: string, id: string) => [...str.matchAll(createRegex(id))].map(m => m[1] ?? null)
+
+/** Replace with input value or fallback **/
+const replaceTokens = (str: string, id: string, inputs: string[] = []) => {
+    return str.replace(createRegex(id), (match: string, num: string | undefined, fallback: string | undefined) => {
+        // 1. Determine index: Use the #num if it exists, otherwise default to 0
+        const index = num !== undefined ? parseInt(num, 10) : 0
+
+        // 2. Get value from array
+        const value = inputs[index]
+
+        // 3. Return priority: Input Value -> Fallback -> Original Match
+        if (value !== undefined) return value === "" ? (fallback ?? "") : value
+        return fallback ?? match
+    })
+}
+
+export function replaceDynamicValues(text: string, { showId, layoutId, slideIndex, type, id, mode }: any, _updater = 0, popup = false) {
+    const isOutputWin = isOutputWindow()
+
+    if (type === "stage") {
+        const stageLayoutId: string = isOutputWin ? Object.values(get(outputs))[0]?.stageOutput || id : id
+        const stageOutput = get(stageShows)[stageLayoutId]?.settings?.output
+        const outputId = stageOutput || getActiveOutputs(isOutputWin ? get(allOutputs) : get(outputs), false, true, true)[0]
+        const outSlide = (isOutputWin ? get(allOutputs) : get(outputs))[outputId]?.out?.slide
+        showId = outSlide?.id
+        slideIndex = outSlide?.index ?? -1
+    }
+
+    const currentShow = showId ? _show(showId).get() || null : null
+    if (type === "show" && !currentShow) return ""
+
+    // remove unused scripture dynamic values ({scripture_X} / {scriptureNUM_X})
+    const regex = /\{scripture(?:\d+)?_[^}]*\}/g
+    if (regex.test(text) && !popup) text = text.replace(regex, "")
+
+    const customIds = ["slide_text_current", "active_layers", "active_styles", "output_windows_active", "log_song_usage"]
+    ;[...getDynamicIds(false, mode), ...customIds].forEach((dynamicId) => {
+        if (!exists(text, dynamicId) && !(dynamicId.startsWith("$") && exists(text, dynamicId.replace("$", "variable_")))) return
+
+        const newValue = getDynamicValueText(dynamicId, currentShow)
+        text = replaceDynamicValueWithFallback(text, dynamicId, newValue)
+
+        // $ = variable_
+        if (dynamicId.startsWith("$")) text = replaceDynamicValueWithFallback(text, dynamicId.replace("$", "variable_"), newValue)
     })
 
     return text
 
-    function getDynamicValue(id, show) {
-        if (id.includes("meta_")) {
-            let key = id.slice(5)
-            return show.meta[key] || ""
+    // append {variable|no value} to add fallback
+    function replaceDynamicValueWithFallback(text: string, dynamicId: string, newValue: string | string[]): string {
+        if (!Array.isArray(newValue)) newValue = [newValue]
+        return replaceTokens(text, dynamicId, newValue)
+    }
+
+    function getDynamicValueText(dynamicId: string, show: Show | null): string | string[] {
+        // VARIABLE
+        if (dynamicId.startsWith("variable_set_") || dynamicId.startsWith("$") || dynamicId.startsWith("variable_")) {
+            return getVariableValue(dynamicId, { showId, layoutId, slideIndex, type, id: dynamicId })
         }
 
-        let activeLayout = layoutId ? [layoutId] : "active"
-        let ref = _show(showId).layouts(activeLayout).ref()[0]
-        let layout = _show(showId).layouts(activeLayout).get()[0]
+        if (dynamicId.startsWith("timer_")) {
+            let min = dynamicId.startsWith("timer_m_")
+            let sec = dynamicId.startsWith("timer_s_")
+            const nameId = dynamicId.slice(min || sec ? 8 : 6)
+            const timer = keysToID(get(timers)).find((a) => getVariableNameId(a.name) === nameId)
+            if (!timer) return min || sec ? "00" : "00:00"
 
-        return dynamicValues[id]({ show, ref, slideIndex, layout })
+            const today = new Date()
+            const currentTime = getCurrentTimerValue(timer, { id: timer.id }, today)
+
+            const overflow = !!timer.overflow
+            const isOverflowing = getTimerOverflow()
+
+            if ((min || sec) && isOverflowing) {
+                if (min || !overflow) return "00"
+                return (currentTime < 0 ? "" : "-") + currentTime.toString().padStart(2, "0")
+            }
+            if (min) {
+                return currentTime >= 60
+                    ? Math.floor(currentTime / 60)
+                          .toString()
+                          .padStart(2, "0")
+                    : "00"
+            }
+            if (sec) return (currentTime % 60).toString().padStart(2, "0")
+
+            const timeValue = joinTimeBig(typeof currentTime === "number" ? currentTime : 0)
+            if (isOverflowing) return `-${timeValue}`
+            return timeValue
+
+            function getTimerOverflow() {
+                if (!timer?.overflow) return false
+                if (currentTime < 0) return true
+                if (timer.type !== "counter") return false
+                let start = timer.start || 0
+                let end = timer.end || 0
+                if (start < end) return currentTime > end
+                return currentTime < end
+            }
+        }
+
+        if (dynamicId.startsWith("rss_")) {
+            const nameId = dynamicId.slice(4)
+            const rss = get(special).dynamicRSS?.find((a) => getVariableNameId(a.name) === nameId)
+            if (!rss) return ""
+
+            return convertRSSToString(getRSS(rss.url, rss.updateInterval), rss.divider, rss.count)
+        }
+
+        let outputId: string = getWindowOutputId()
+
+        if (dynamicId.startsWith("video_") && isOutputWin) {
+            send(OUTPUT, ["MAIN_REQUEST_VIDEO_DATA"], { id: outputId })
+        }
+
+        const output = get(outputs)[outputId]
+
+        // set to normal output, if stage output, for video time
+        const stageLayout = output?.stageOutput
+        if (stageLayout) outputId = get(stageShows)[stageLayout]?.settings?.output || getActiveOutputs(get(allOutputs), false, true, true)[0]
+
+        const outSlide: OutSlide | null = output?.out?.slide || null
+
+        if (!showId || (outSlide?.id && type !== "show")) {
+            showId = outSlide?.id
+            layoutId = outSlide?.layout
+            slideIndex = outSlide?.index ?? -1
+            show = showId ? _show(showId).get() || null : null
+        }
+        if (!show) show = showId ? _show(showId).get() || null : null
+
+        // META
+        if (dynamicId.startsWith("meta_")) {
+            const key = dynamicId.slice(5).replaceAll("_", " ")
+            if (!show || !Object.keys(show)) return ""
+            let customKey = get(customMetadata).custom.find((a) => a.toLowerCase() === key) || key
+            if (customKey === "ccli") customKey = "CCLI"
+            return show.meta?.[customKey] || ""
+        }
+
+        const activeLayout = layoutId ? [layoutId] : "active"
+        const ref = _show(showId).layouts(activeLayout).ref()[0] || []
+        const layout = _show(showId).layouts(activeLayout).get()[0] || {}
+
+        const outBackground = output?.out?.background || null
+        const bgPath = outBackground?.path || ""
+
+        const videoTime: number = get(videosTime)[outputId] || 0
+        const videoDuration: number = get(videosData)[outputId]?.duration || 0
+
+        const playingAudioIds = AudioPlayer.getAllPlaying(false)
+        const activeAudio = get(playingAudio)[playingAudioIds[0]]?.audio
+        const audioTime = (isOutputWin ? get(dynamicValueData).audioTime : activeAudio?.currentTime) || 0
+        const audioDuration = (isOutputWin ? get(dynamicValueData).audioDuration : activeAudio?.duration) || 0
+
+        let projectIndex = get(projects)[get(activeProject) || ""]?.shows?.findIndex((a) => a.id === showId) ?? -1
+        // if (projectIndex < 0) projectIndex = get(activeShow)?.index ?? -2
+        const projectRef = { id: get(activeProject) || "", index: projectIndex }
+
+        const audioPath = playingAudioIds[playingAudioIds.length - 1] // get newest
+
+        // custom - only from external source (Companion)
+        // or used to set variable value: https://github.com/ChurchApps/FreeShow/issues/1720
+        if (dynamicId === "slide_text_current") {
+            if (outSlide?.id === "temp" ? !outSlide?.previousSlides?.[0] : !show?.slides?.[ref[slideIndex]?.id]) return ""
+            return getTextLines(outSlide?.id === "temp" ? { items: outSlide.previousSlides![0] } : show!.slides[ref[slideIndex]?.id]).join("<br>")
+        } else if (dynamicId === "active_layers") {
+            const backgroundActive = !isOutCleared("background")
+            const slideActive = !isOutCleared("slide")
+            const overlaysActive = !isOutCleared("overlays")
+            const audioActive = Object.keys(get(playingAudio)).length || get(playingMetronome)
+            return [backgroundActive ? "background" : "", slideActive ? "slide" : "", overlaysActive ? "overlays" : "", audioActive ? "audio" : ""].filter(Boolean).join(", ")
+        } else if (dynamicId === "active_styles") {
+            const activeOutputIds = getAllNormalOutputs().map((a) => a.id)
+            const outputStyleIds = activeOutputIds.map((oId) => get(outputs)[oId].style || "").filter(Boolean)
+            const outputStyleNames = outputStyleIds.map((styleId) => get(styles)[styleId]?.name).filter(Boolean)
+            return outputStyleNames.sort((a, b) => a.localeCompare(b)).join(", ")
+        } else if (dynamicId === "output_windows_active") {
+            return get(outputDisplay) ? "true" : "false"
+        } else if (dynamicId === "log_song_usage") {
+            return get(special).logSongUsage ? "true" : "false"
+        }
+
+        if (scriptureDynamicValues[dynamicId]) {
+            return scriptureDynamicValues[dynamicId]() || ""
+        }
+
+        if (!dynamicValues[dynamicId]) return ""
+
+        const value = (dynamicValues[dynamicId]({ show, ref, slideIndex, layout, projectRef, outSlide, bgPath, videoTime, videoDuration, audioTime, audioDuration, audioPath }) ?? "").toString()
+
+        if (dynamicId === "show_name_next" && !value && isOutputWin) {
+            send(OUTPUT, ["MAIN_SHOWS_DATA"])
+        }
+
+        // send data to output
+        const sendToOutput = ["audio_time", "audio_countdown", "audio_duration"]
+        if (sendToOutput.includes(dynamicId) && isMainWindow()) {
+            send(OUTPUT, ["DYNAMIC_VALUE_DATA"], { audioTime, audioDuration })
+        }
+
+        return value
     }
 }
 
 const dynamicValues = {
-    show_name: ({ show }) => show.name || "",
+    // time
+    time_date: () => addZero(new Date().getDate()),
+    time_month: () => addZero(new Date().getMonth() + 1),
+    time_year: () => new Date().getFullYear(),
+    time_hours: () => addZero(new Date().getHours()),
+    time_minutes: () => addZero(new Date().getMinutes()),
+    time_seconds: () => addZero(new Date().getSeconds()),
+    // time_weeknum: () => "52",
+
+    time_str_day: () => getWeekday(new Date().getDay(), get(dictionary), true),
+    time_str_month: () => getMonthName(new Date().getMonth(), get(dictionary), true),
+
+    // project
+    project_section: ({ outSlide }) => {
+        const active = getActiveProjectSection({ outSlide })
+        return active?.name || ""
+    },
+    project_section_next: ({ outSlide }) => {
+        const active = getActiveProjectSection({ outSlide }, true)
+        return active?.name || ""
+    },
+    project_section_time: () => getActiveProjectSection()?.data?.time || "00:00",
+    project_section_time_next: () => getActiveProjectSection({}, true)?.data?.time || "00:00",
+    project_section_time_until_next: () => {
+        const projectTime = getActiveProjectSection({}, true)?.data?.time
+        return projectTime ? joinTimeBig(getTimeUntilClock(getActiveProjectSection({}, true)?.data?.time)) : "00:00"
+    },
+
+    // show
+    show_name: ({ show }) => show?.name || "",
+    show_name_next: ({ projectRef }) => get(shows)[get(projects)[projectRef.id]?.shows?.find((a, i) => a.type !== "section" && i > projectRef.index)?.id ?? -1]?.name || "",
 
     layout_slides: ({ ref }) => ref.length,
     layout_notes: ({ layout }) => layout.notes || "",
 
-    slide_group: ({ show, ref, slideIndex }) => show.slides[ref[slideIndex].id].group || "",
-    slide_number: ({ slideIndex }) => Number(slideIndex || 0) + 1,
-    slide_notes: ({ show, ref, slideIndex }) => show.slides[ref[slideIndex].id].notes || "",
+    slide_number: ({ slideIndex }) => (Number(slideIndex ?? -1) + 1).toString(),
+    slide_group: ({ show, ref, slideIndex, outSlide }) => {
+        const parentIndex = ref[slideIndex]?.parent?.layoutIndex ?? slideIndex
+        const group = show?.slides?.[ref[parentIndex]?.id]?.group || ""
+        return getGroupName({ show, showId: outSlide?.id }, ref[parentIndex]?.id, group, parentIndex, false, false)
+    },
+    slide_group_next: ({ show, ref, slideIndex, outSlide }) => {
+        const parentIndex = ref[slideIndex + 1]?.parent?.layoutIndex ?? slideIndex + 1
+        const group = show?.slides?.[ref[parentIndex]?.id]?.group || ""
+        return getGroupName({ show, showId: outSlide?.id }, ref[parentIndex]?.id, group, parentIndex, false, false)
+    },
+    slide_group_upcoming: ({ show, ref, slideIndex, outSlide }) => {
+        if (slideIndex < 0) return ""
+        let nextParentIndex = slideIndex + 1
+        while (ref[nextParentIndex]?.type !== "parent" && nextParentIndex < ref.length) nextParentIndex++
+        const group = show?.slides?.[ref[nextParentIndex]?.id]?.group || ""
+        return getGroupName({ show, showId: outSlide?.id }, ref[nextParentIndex]?.id, group, nextParentIndex, false, false)
+    },
+    slide_notes: ({ show, ref, slideIndex }) => show?.slides?.[ref[slideIndex]?.id]?.notes || "",
+    slide_notes_next: ({ show, ref, slideIndex }) => show?.slides?.[ref[slideIndex + 1]?.id]?.notes || "",
+
+    // text
+    slide_text_previous: ({ show, ref, slideIndex, outSlide }) => getTextLines(outSlide?.id === "temp" ? { items: outSlide?.previousSlides } : show?.slides?.[ref[slideIndex - 1]?.id]).join("<br>"),
+    slide_text_next: ({ show, ref, slideIndex, outSlide }) => getTextLines(outSlide?.id === "temp" ? { items: outSlide?.nextSlides } : show?.slides?.[ref[slideIndex + 1]?.id]).join("<br>"),
+    show_text_full: ({ show, ref }) => ref.map((a) => getTextLines(show?.slides?.[a.id]).join("<br>")).join("<br><br>"),
+
+    // image (exif)
+    exif_datetime: ({ bgPath }) => getExifData(bgPath, "DateTimeOriginal"),
+    exif_aperture: ({ bgPath }) => getExifData(bgPath, "ApertureValue"),
+    exif_brightness: ({ bgPath }) => getExifData(bgPath, "BrightnessValue"),
+    exif_exposure: ({ bgPath }) => getExifData(bgPath, "ExposureTime"),
+    exif_fnumber: ({ bgPath }) => getExifData(bgPath, "FNumber"),
+    exif_flash: ({ bgPath }) => getExifData(bgPath, "Flash"),
+    exif_focallength: ({ bgPath }) => getExifData(bgPath, "FocalLength"),
+    exif_iso: ({ bgPath }) => getExifData(bgPath, "ISO"),
+    exif_interopoffset: ({ bgPath }) => getExifData(bgPath, "InteropOffset"),
+    exif_lightsource: ({ bgPath }) => getExifData(bgPath, "LightSource"),
+    exif_shutterspeed: ({ bgPath }) => getExifData(bgPath, "ShutterSpeedValue"),
+    exif_lens: ({ bgPath }) => getExifData(bgPath, "LensMake"),
+    exif_lensmodel: ({ bgPath }) => getExifData(bgPath, "LensModel"),
+    exif_gps: ({ bgPath }) => `${getExifData(bgPath, "GPSLatitudeRef", "gps")}${getExifData(bgPath, "GPSLatitude", "gps")?.split(",")[0]} ${getExifData(bgPath, "GPSLongitudeRef", "gps")}${getExifData(bgPath, "GPSLongitude", "gps")?.split(",")[0]} ${getExifData(bgPath, "GPSAltitude", "gps")}`.trim(),
+    exif_device: ({ bgPath }) => `${getExifData(bgPath, "Make", "image")} ${getExifData(bgPath, "Model", "image")}`.trim(),
+    exif_software: ({ bgPath }) => getExifData(bgPath, "Software", "image"),
+
+    // video
+    video_time: ({ videoTime }) => joinTime(secondsToTime(videoTime)),
+    video_countdown: ({ videoTime, videoDuration }) => joinTime(secondsToTime(videoDuration > 0 ? videoDuration - videoTime : 0)),
+    video_duration: ({ videoDuration }) => joinTime(secondsToTime(videoDuration)),
+
+    // audio
+    audio_title: ({ audioPath }) => getMetadata(audioPath).title || removeExtension(getFileName(audioPath)) || "",
+    audio_subtitle: ({ audioPath }) => (getMetadata(audioPath).subtitle || []).join(", "),
+    audio_artist: ({ audioPath }) => getArtist(getMetadata(audioPath)),
+    audio_album: ({ audioPath }) => getMetadata(audioPath).album || "",
+    audio_genre: ({ audioPath }) => (getMetadata(audioPath).genre || []).join(", "),
+    audio_year: ({ audioPath }) => getMetadata(audioPath).date || "",
+    // audio_cover: ({audioPath}) => getMetadata(audioPath).picture?.[0].data, // buffer
+    // disk: {no: null, of: null}
+    // track: {no: null, of: null}
+    audio_time: ({ audioTime }) => joinTime(secondsToTime(audioTime)),
+    audio_countdown: ({ audioTime, audioDuration }) => joinTime(secondsToTime(audioDuration > 0 ? audioDuration - audioTime : 0)),
+    audio_duration: ({ audioDuration }) => joinTime(secondsToTime(audioDuration)),
+    audio_volume: () => AudioPlayer.getVolume() * 100
+}
+
+// placeholder values
+const scriptureDynamicValues = {
+    scripture_text: () => "In the beginning...",
+    scripture_book: () => "Genesis",
+    scripture_book_abbr: () => "Gen",
+    scripture_chapter: () => "1",
+    scripture_verses: () => "1-3",
+    scripture_reference: () => "Genesis 1:1-3", // current slide only
+    scripture_reference_full: () => "Genesis 1:1-10", // across all slides
+    scripture_reference_last: () => "Last slide only", // full reference, only on last slide
+    scripture_name: () => "King James Version", // version
+    // scripture_name_abbr: () => "KJV",
+    // chapter_verses, book_chapters
+    // add number for collections scripture1_
+
+    // not replaced directly, but the style is used:
+    scripture_number: () => "1",
+    scripture_red_jesus: () => "Words"
+}
+
+export function getVariableNameId(name: string) {
+    if (typeof name !== "string") return ""
+    return name.toLowerCase().trim().replaceAll(" ", "_")
+}
+
+export function getNumberVariables(variableUpdater = get(variables), _dynamicUpdaters: any = null) {
+    const numberVariables = Object.values(variableUpdater).filter((a) => a.type === "number" || a.type === "random_number" || (a.type === "text" && a.text?.includes("{")))
+    return numberVariables.reduce((css, v) => (css += `--variable-${getVariableNameId(v.name)}: ${v.type === "text" ? getDynamicValue(v.text || "") : (v.number ?? (v.default || 0))};`), "")
+}
+
+// PROJECT SECTION DATA
+
+function getActiveProjectSection(data: any = {}, next = false): ProjectShowRef | null {
+    const project = get(projects)[get(activeProject) || ""]
+    if (!project?.shows) return null
+
+    const hasTime = project.shows.find((a) => a.data?.time)
+    if (!hasTime) {
+        // get active outputted if any
+        const showId = data.outSlide?.id
+        let showIndex = project.shows.findIndex((a, i) => a.id === showId && (data.outSlide?.projectIndex === undefined || i === data.outSlide.projectIndex))
+        if (showIndex < 0) showIndex = project.shows.findIndex((a) => a.id === showId)
+
+        if (next) return project.shows.find((a, i) => i > showIndex && a.type === "section") || null
+        return project.shows.findLast((a, i) => i <= showIndex && a.type === "section") || null
+    }
+
+    const active = getClosestProjectSectionByTime()
+    return project.shows.find((a) => a.id === (next ? active?.closestUpcommingId : active?.closestPassedId)) || null
+}
+
+function getClosestProjectSectionByTime() {
+    const project = get(projects)[get(activeProject) || ""]
+    if (!project?.shows) return null
+
+    let closestPassedTime = 0
+    let closestUpcommingTime = 0
+    let closestPassedId = ""
+    let closestUpcommingId = ""
+    project.shows.forEach((a) => {
+        const time = a.data?.time
+        if (!time || a.type !== "section") return
+
+        const timeUntil = getTimeUntilClock(time)
+        if (timeUntil < 0 && (!closestPassedTime || timeUntil > closestPassedTime)) {
+            closestPassedTime = timeUntil
+            closestPassedId = a.id
+        }
+        if (timeUntil > 0 && (!closestUpcommingTime || timeUntil < closestUpcommingTime)) {
+            closestUpcommingTime = timeUntil
+            closestUpcommingId = a.id
+        }
+    })
+
+    return { closestPassedId, closestUpcommingId }
+}
+
+// EXIF
+
+function getExifData(backgroundPath: string, key: string, parent: string = "exif"): string {
+    if (!backgroundPath.endsWith(".jpg") && !backgroundPath.endsWith(".jpeg") && !backgroundPath.endsWith(".tiff") && !backgroundPath.endsWith(".cr2") && !backgroundPath.endsWith(".nef")) return ""
+
+    const exif = getExif(backgroundPath)
+    if (!exif) return ""
+
+    const value = exif[parent]?.[key]
+    if (!value) return ""
+
+    if (typeof value === "number") return value.toFixed(2).replace(".00", "")
+    return value.toString()
+}
+
+const exifCache: Map<string, ExifData> = new Map()
+function getExif(path: string) {
+    if (exifCache.has(path)) return exifCache.get(path)!
+
+    requestMain(Main.READ_EXIF, { id: path }, (data) => {
+        if (!data?.exif) return
+        exifCache.set(path, data.exif)
+    })
+
+    return null
+}
+
+// AUDIO METADATA
+
+function getMetadata(audioPath: string) {
+    return get(audioData)[audioPath]?.metadata || {}
+}
+
+function getArtist(metadata: ICommonTagsResult) {
+    const artists = [metadata.originalartist, metadata.artist, metadata.albumartist, ...(metadata.artists || [])].filter(Boolean)
+    return [...new Set(artists)].join(", ")
 }

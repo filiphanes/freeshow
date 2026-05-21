@@ -1,0 +1,65 @@
+name: freeshow
+version: 1.4.9
+title: FreeShow
+summary: Show song lyrics and more for free!
+description: A dynamic, user-friendly, and open-source presenter built for all of your presentations.
+contact:
+    - dev@freeshow.app
+license: GPL-3.0-or-later
+donation:
+    - https://churchapps.org/partner
+issues:
+    - https://github.com/churchapps/freeshow/issues
+source-code:
+    - https://github.com/churchapps/freeshow
+website:
+    - https://freeshow.app
+platforms:
+    amd64:
+        build-on: amd64
+        build-for: amd64
+    arm64:
+        build-on: arm64
+        build-for: arm64
+base: core24
+grade: stable
+confinement: strict
+layout:
+    /usr/share/alsa:
+        bind: $SNAP/usr/share/alsa
+    /usr/share/libdrm:
+        bind: $SNAP/usr/share/libdrm
+parts:
+    freeshow:
+        source: dist/linux-unpacked/
+        plugin: dump
+        stage-packages:
+            - libasound2t64
+            - libnode109
+            - libglu1-mesa
+            - libltc11
+            - libproxy1v5
+            - libdrm-common
+apps:
+    freeshow:
+        command: command.sh
+        extensions: [gnome]
+        plugs:
+            - alsa
+            - audio-playback
+            - avahi-control
+            - browser-support
+            - camera
+            - home
+            - network
+            - network-bind
+            - network-observe
+            - network-setup-observe
+            - pulseaudio
+            - pipewire
+            - removable-media
+            - screen-inhibit-control
+        environment:
+            PATH: $SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin:$PATH
+            SNAP_DESKTOP_RUNTIME: $SNAP/gnome-platform
+            LD_LIBRARY_PATH: $SNAP_LIBRARY_PATH:$SNAP/lib:$SNAP/usr/lib:$LD_LIBRARY_PATH

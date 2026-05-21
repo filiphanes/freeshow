@@ -1,41 +1,65 @@
 <script lang="ts">
-    import { MAIN } from "../../../../types/Channels"
+    import { Main } from "../../../../types/IPC/Main"
+    import { sendMain } from "../../../IPC/main"
     import { activePopup, alertMessage } from "../../../stores"
-    import { send } from "../../../utils/request"
+    import { translateText } from "../../../utils/language"
     import Icon from "../../helpers/Icon.svelte"
-    import T from "../../helpers/T.svelte"
-    import Button from "../../inputs/Button.svelte"
+    import Link from "../../inputs/Link.svelte"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
+    import Loader from "../Loader.svelte"
 
-    let msg: string = ""
+    let msg = ""
     $: msg = $alertMessage.toString()
 
     // UPDATER
-    $: if (msg.includes("freeshow.app")) {
-        msg = msg.replace("freeshow.app", '<a href="#void" class="website">freeshow.app</a>')
+    $: if (msg.includes("link#")) {
+        msg = msg.replace("link#bible-converter", '<a id="bible-converter">Bible Converter</a>')
     }
 
     function click(e: any) {
-        if (e.target.closest(".website")) {
-            send(MAIN, ["URL"], "https://freeshow.app/?download")
+        if (e.target.closest("a#bible-converter")) {
+            sendMain(Main.URL, "https://github.com/vassbo/bible-converter")
         }
+    }
+
+    function keydown(e: KeyboardEvent) {
+        if (e.key === "Enter") close()
+    }
+
+    function close() {
+        activePopup.set(null)
     }
 </script>
 
-<p on:click={click}>
-    {#key msg}
-        {#if !msg.includes("<") && msg?.length - msg?.replaceAll(".", "").length === 1}
-            <T id={msg} />
-        {:else}
-            {@html msg}
-        {/if}
-    {/key}
-</p>
+<svelte:window on:keydown={keydown} />
 
-<br />
+{#if msg === "actions.closing"}
+    <div class="centered">
+        {translateText(msg)}
+        <Loader />
+    </div>
+{:else}
+    <p on:click={click}>
+        {#key msg}
+            {#if msg.includes("captions#")}
+                {translateText("captions.info")}
+                <br />
+                <br />
+                <Link url={msg.slice(msg.indexOf("#") + 1)}>{msg.slice(msg.indexOf("#") + 1)}</Link>
+            {:else if !msg.includes("<") && msg?.length - msg?.replaceAll(".", "").length === 1}
+                {translateText(msg)}
+            {:else}
+                {@html msg}
+            {/if}
+        {/key}
+    </p>
 
-<Button on:click={() => activePopup.set(null)} center dark>
-    <Icon id="check" size={1.2} />
-</Button>
+    <br />
+
+    <MaterialButton variant="outlined" on:click={close}>
+        <Icon id="check" size={1.2} white />
+    </MaterialButton>
+{/if}
 
 <style>
     p {
@@ -50,6 +74,9 @@
         gap: 5px;
         align-items: flex-end;
 
+        text-decoration: underline;
+        cursor: pointer;
+
         -webkit-user-drag: none;
     }
     p :global(a):hover {
@@ -57,5 +84,12 @@
     }
     p :global(a):active {
         opacity: 0.9;
+    }
+
+    .centered {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 25px;
     }
 </style>

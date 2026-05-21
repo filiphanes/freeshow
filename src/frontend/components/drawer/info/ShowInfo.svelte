@@ -1,119 +1,70 @@
 <script lang="ts">
-    import { activeShow, categories, shows, showsCache, templates } from "../../../stores"
+    import type { Line, Show, TrimmedShow } from "../../../../types/Show"
+    import { activeShow, activeTagFilter, categories, globalTags, shows, showsCache, templates } from "../../../stores"
+    import { hasNewerUpdate } from "../../../utils/common"
+    import { keysToID, sortByName } from "../../helpers/array"
+    import Icon from "../../helpers/Icon.svelte"
     import { _show } from "../../helpers/shows"
     import T from "../../helpers/T.svelte"
-    import Date from "../../system/Date.svelte"
+    import Button from "../../inputs/Button.svelte"
+    import InfoMetadata from "./InfoMetadata.svelte"
 
-    $: show = $activeShow?.id ? $shows[$activeShow.id] : null
-    $: fullShow = $activeShow?.id ? $showsCache[$activeShow.id] : null
+    let show: TrimmedShow | null = null
+    let fullShow: Show | null = null
+    $: if ($shows || $showsCache) updateShows()
+    async function updateShows() {
+        if (await hasNewerUpdate("SHOW_INFO", 200)) return
+
+        show = $activeShow?.id ? $shows[$activeShow.id] : null
+        fullShow = $activeShow?.id ? $showsCache[$activeShow.id] : null
+    }
 
     $: created = show?.timestamps?.created || null
     $: modified = show?.timestamps?.modified || null
     $: used = show?.timestamps?.used || null
 
-    let words: number = 0
-    let allLines: any[]
-    $: if (fullShow) allLines = _show($activeShow!.id).slides().items().lines().get()
+    $: category = show?.category ? ($categories[show.category]?.name ?? "error.not_found") || "main.unnamed" : "main.none"
+
+    $: tags = sortByName(keysToID($globalTags).filter((a) => show?.quickAccess?.tags?.includes(a.id))).map(({ name }) => name)
+
+    let words = 0
+    let allLines: Line[][]
+    $: if (fullShow)
+        allLines = _show($activeShow?.id || "")
+            .slides()
+            .items()
+            .lines()
+            .get()
     $: if (allLines) getWords()
 
     function getWords() {
         words = 0
-        allLines.forEach((lines: any) => {
-            lines.forEach((line: any) => {
-                line?.text?.forEach((text: any) => (words += text.value.split(" ").length))
+        allLines.forEach((lines) => {
+            if (!Array.isArray(lines)) return
+            lines.forEach((line) => {
+                line?.text?.forEach((text) => (words += text.value?.split(" ").length))
             })
         })
     }
+
+    $: template = fullShow?.settings?.template ? ($templates[fullShow.settings.template]?.name ?? "error.not_found") || "main.unnamed" : "main.none"
+
+    $: info = [{ label: "info.created", value: created, type: "date" }, { label: "info.modified", value: modified, type: "date" }, { label: "info.used", value: used, type: "date" }, { label: "info.category", value: category }, ...(Object.keys($globalTags).length ? [{ label: "meta.tags", value: tags.join(", ") }] : []), { label: "info.slides", value: Object.keys(fullShow?.slides || {}).length }, { label: "info.words", value: words }, { label: "info.template", value: template }]
 </script>
 
-<main>
-    <h2 style="text-align: center" title={show?.name}>
-        {#if show?.name.length}
-            {show.name}
-        {:else}
-            <span style="opacity: 0.5">
-                <T id={"main.unnamed"} />
-            </span>
-        {/if}
-    </h2>
-    <p>
-        <span class="title"><T id={"info.created"} /></span>
-        {#if created}
-            <Date d={created} />
-        {:else}
-            <span>—</span>
-        {/if}
-    </p>
-    <p>
-        <span class="title"><T id={"info.modified"} /></span>
-        {#if modified}
-            <Date d={modified} />
-        {:else}
-            <span>—</span>
-        {/if}
-    </p>
-    <p>
-        <span class="title"><T id={"info.used"} /></span>
-        {#if used}
-            <Date d={used} />
-        {:else}
-            <span>—</span>
-        {/if}
-    </p>
-    <p>
-        <span class="title"><T id={"info.category"} /></span>
-        <span>
-            {#if show?.category}
-                {#if $categories[show?.category]}
-                    {#if $categories[show?.category].default}
-                        <T id={$categories[show?.category].name} />
-                    {:else}
-                        {$categories[show?.category].name}
-                    {/if}
-                {:else}
-                    <T id="error.not_found" />
-                {/if}
-            {:else}
-                —
-            {/if}
-        </span>
-    </p>
-    <p>
-        <span class="title"><T id={"info.slides"} /></span>
-        <span>{Object.keys(fullShow?.slides || {}).length}</span>
-    </p>
-    <p>
-        <span class="title"><T id={"info.words"} /></span>
-        <span>{words}</span>
-    </p>
-    <p>
-        <span class="title"><T id={"info.template"} /></span>
-        <span>
-            {#if fullShow?.settings?.template}
-                {#if $templates[fullShow?.settings.template]}
-                    {$templates[fullShow?.settings.template]?.name || "—"}
-                {:else}
-                    <T id="error.not_found" />
-                {/if}
-            {:else}
-                <T id="main.none" />
-            {/if}
-        </span>
-    </p>
-</main>
+<div class="scroll">
+    <InfoMetadata title={show?.name} {info} />
+</div>
+
+{#if $activeTagFilter?.length}
+    <Button style="width: 100%;" on:click={() => activeTagFilter.set([])} center dark>
+        <Icon id="close" right />
+        <T id="meta.clear_tag_filter" />
+    </Button>
+{/if}
 
 <style>
-    main {
-        overflow-y: auto;
-        padding: 10px;
-    }
-
-    p {
-        display: flex;
-        justify-content: space-between;
-    }
-
-    .title {
-        opacity: 0.8;
+    .scroll {
+        flex: 1;
     }
 </style>

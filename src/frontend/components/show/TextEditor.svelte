@@ -1,92 +1,64 @@
 <script lang="ts">
+    import type { Show } from "../../../types/Show"
     import { getQuickExample } from "../../converters/txt"
-    import { slidesOptions } from "../../stores"
-    import { _show } from "../helpers/shows"
+    import { activePopup, textEditActive, textEditZoom } from "../../stores"
+    import { transposeText } from "../../utils/chordTranspose"
+    import { newToast } from "../../utils/common"
+    import Icon from "../helpers/Icon.svelte"
+    import FloatingInputs from "../input/FloatingInputs.svelte"
+    import MaterialButton from "../inputs/MaterialButton.svelte"
+    import MaterialZoom from "../inputs/MaterialZoom.svelte"
     import { formatText } from "./formatTextEditor"
+    import { getPlainEditorText } from "./getTextEditor"
     import Notes from "./tools/Notes.svelte"
 
-    export let currentShow: any
+    export let currentShow: Show | undefined
 
-    let text: string = ""
-    $: if (currentShow) getText()
+    let text = ""
+    $: if (currentShow) text = getPlainEditorText()
 
-    // slide data for editing
-    let slidesData: any[] = []
+    $: hasLockedSlide = Object.values(currentShow?.slides || {}).some((a) => a.locked)
+    $: isLocked = currentShow?.locked || hasLockedSlide
+    $: if (isLocked) newToast("output.state_locked")
 
-    // WIP only first textbox if multiple!
-
-    function getText() {
-        let ref = _show().layouts("active").ref()[0]
-        let slides = _show().get("slides")
-
-        text = ""
-        slidesData = []
-
-        ref.forEach((refSlide) => {
-            let id = refSlide.id
-            let slide = slides[id]
-            if (!slide) return
-
-            let slideData: any = { id, items: slide.items, text: "", ref: refSlide }
-            let data = getItems(slide.items)
-
-            if (slide.group !== null && data.hasTextboxItem) {
-                let groupId = "[" + (replaceValues(slide.group, true) || "—") + "]"
-                text += groupId + "\n"
-                slideData.text += groupId + "\n"
-            }
-
-            text += data.text
-
-            slideData.text += data.plainText
-
-            // don't add slides without textboxes
-            if (data.hasTextboxItem) slidesData.push(slideData)
-        })
-
-        text = text.trim()
+    // Ctrl+F in shortcuts.ts does not get triggered when a text input is active, so we trigger from here as well
+    function keydown(e: any) {
+        if (!e.ctrlKey && !e.metaKey) return
+        if (e.key === "f") activePopup.set("find_replace")
     }
 
-    function getItems(items) {
-        let text = ""
-        let plainText = ""
-        let hasTextboxItem: boolean = false
-
-        items.forEach((item) => {
-            if (!item.lines) return
-            // only return first textbox!
-            if (hasTextboxItem) return
-
-            hasTextboxItem = true
-
-            let filteredLines = item.lines?.filter((line) => line.text?.filter((text) => text.value.length).length)
-            filteredLines.forEach((line, i) => {
-                let tempText = ""
-                line.text?.forEach((txt) => {
-                    tempText += txt.value
-                })
-
-                if (tempText.length) {
-                    text += tempText + "\n"
-                    plainText += tempText + (i < filteredLines.length - 1 ? "\n" : "")
-                }
-            })
-            // remove double enters
-            text = text.replaceAll("\n\n", "")
-            text += "\n"
-        })
-
-        return { text, plainText, hasTextboxItem }
+    // transpose chords
+    function transposeUp() {
+        formatText(transposeText(text, 1))
+    }
+    function transposeDown() {
+        formatText(transposeText(text, -1))
     }
 
-    const br = "||__$BREAK$__||"
-
-    function replaceValues(text: string, revert: boolean = false) {
-        if (!text) return ""
-
-        if (revert) return text.replaceAll(br, "\n")
-        return text.replaceAll("\n", br)
-    }
+    $: showHasChords = Object.values(currentShow?.slides || {}).find((a) => a.items?.find((a) => a.lines?.find((a) => a.chords)))
 </script>
 
-<Notes style="padding: 30px;font-size: {(-1.1 * $slidesOptions.columns + 12) / 6}em;" placeholder={getQuickExample()} value={text} on:change={formatText} />
+<Notes disabled={isLocked} style="padding: 30px;font-size: {$textEditZoom / 8}em;" placeholder={getQuickExample()} value={text} on:change={(e) => formatText(e.detail)} on:keydown={keydown} />
+
+<FloatingInputs arrow let:open>
+    <MaterialZoom hidden={!open} columns={$textEditZoom / 10} min={0.5} max={2} defaultValue={1} addValue={-0.1} on:change={(e) => textEditZoom.set(e.detail * 10)} />
+
+    {#if open}
+        <div class="divider"></div>
+    {/if}
+
+    <MaterialButton isActive title="show.text" on:click={() => textEditActive.set(false)}>
+        <Icon id="text_edit" white />
+    </MaterialButton>
+</FloatingInputs>
+
+{#if showHasChords}
+    <FloatingInputs side="left">
+        <MaterialButton on:click={transposeUp} title="edit.transpose_up">
+            <Icon id="arrow_up" size={1.3} white />
+        </MaterialButton>
+        <MaterialButton on:click={transposeDown} title="edit.transpose_down">
+            <Icon id="arrow_down" size={1.3} white />
+        </MaterialButton>
+    </FloatingInputs>
+{/if}

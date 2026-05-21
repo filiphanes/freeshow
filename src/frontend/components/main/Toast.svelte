@@ -1,15 +1,32 @@
 <script lang="ts">
     import { slide } from "svelte/transition"
     import { toastMessages } from "../../stores"
-    import T from "../helpers/T.svelte"
+    import { translateText } from "../../utils/language"
 
     $: messages = $toastMessages
-    $: if (messages) startTimer()
+    $: if (messages?.length) startTimer()
 
     const toastDuration = 4000 // ms
-    let currentTimer: any = null
+    let currentTimer: NodeJS.Timeout | null = null
+
+    const clearEarly = [
+        { if: "toast.saving", when: "toast.saved" },
+        { if: "cloud.syncing", when: "cloud.sync_complete" },
+        { if: "error.media", when: "toast.media_replaced" },
+        { if: "settings.backup_started", when: "settings.backup_finished" },
+        { if: "settings.restore_started", when: "settings.restore_finished" },
+        { if: "toast.recording_started", when: "toast.recording_stopped" },
+        { if: "actions.copied", when: "actions.pasted" }
+    ]
 
     function startTimer() {
+        // clear some early
+        if (clearEarly.find((c) => messages[0] === c.if && messages.find((a) => a === c.when))) {
+            if (currentTimer) clearTimeout(currentTimer)
+            currentTimer = null
+            removeCurrent()
+        }
+
         if (currentTimer) return
         currentTimer = setTimeout(() => {
             currentTimer = null
@@ -22,20 +39,14 @@
     function removeCurrent() {
         toastMessages.update((a) => {
             a.shift()
-
-            if (a.length) startTimer()
             return a
         })
     }
 </script>
 
-{#if messages[0]}
+{#if messages?.[0]}
     <div class="toast" transition:slide>
-        {#if messages[0][0] === "$"}
-            <T id={messages[0].slice(1)} />
-        {:else}
-            {messages[0]}
-        {/if}
+        {translateText(messages[0])}
     </div>
 {/if}
 
@@ -43,21 +54,28 @@
     .toast {
         position: absolute;
         bottom: 0;
-        right: 0;
-        max-width: 300px;
-        /* bottom: 80px;
-        left: 50%;
-        transform: translateX(-50%); */
+        inset-inline-end: 4px;
+        max-width: calc(var(--navigation-width) - 6px);
         z-index: 5000;
 
         background-color: var(--primary-darker);
         color: var(--text);
-        /* border: 2px solid var(--primary-lighter); */
         border: 2px solid var(--secondary);
-        border-bottom: none;
-        border-right: none;
-        font-size: 1.2em;
 
+        border-radius: 8px;
+        /* border-top-left-radius: 8px;
+        border-bottom-left-radius: 8px;
+        border-inline-end: none; */
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+        border-bottom: none;
+
+        font-size: 1.2em;
         padding: 8px 16px;
+
+        /* line-break: anywhere; */
+        overflow-x: auto;
+
+        box-shadow: -2px -2px 5px rgb(0 0 0 / 0.2);
     }
 </style>

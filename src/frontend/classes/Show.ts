@@ -2,23 +2,34 @@ import { get } from "svelte/store"
 import { uid } from "uid"
 import type { Show } from "../../types/Show"
 import { _show } from "../components/helpers/shows"
-import { dictionary, templates } from "../stores"
+import { activeShow, templates } from "../stores"
+import { translateText } from "../utils/language"
 
 export class ShowObj implements Show {
     name: string
+    origin?: string
     private?: boolean
     reference?: any
     category: any
     settings: any
     timestamps: any
+    quickAccess: any
+    metadata?: {
+        override: boolean
+        display: string
+        template: string
+        tags?: string[]
+    }
     meta: any
     slides: any
     layouts: any
     media: any
 
-    constructor(isPrivate: boolean = false, category: null | string = null, layoutId: string = uid(), created: number = new Date().getTime(), template: string | boolean = true) {
+    constructor(isPrivate = false, category: null | string = null, layoutId: string = uid(), created: number = new Date().getTime(), template: string | boolean = true) {
         if (template !== false) {
-            if (typeof template !== "string") template = _show().get("settings.template") || null
+            // get template from active show (if it's not default with the "Header" template)
+            if (typeof template !== "string" && get(activeShow)?.id !== "default") template = _show().get("settings.template") || null
+            else if (template === true) template = ""
             if (!template && get(templates).default) template = "default"
         }
 
@@ -29,11 +40,12 @@ export class ShowObj implements Show {
         this.timestamps = {
             created,
             modified: null,
-            used: null,
+            used: null
         }
+        this.quickAccess = {}
         this.meta = {}
         this.slides = {}
-        this.layouts = { [layoutId]: { name: get(dictionary).example?.default || "Default", notes: "", slides: [] } }
+        this.layouts = { [layoutId]: { name: translateText("example.default"), notes: "", slides: [] } }
         this.media = {}
     }
 }

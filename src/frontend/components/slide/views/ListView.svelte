@@ -4,21 +4,24 @@
     import { custom } from "../../../utils/transitions"
 
     export let list: List = { items: [] }
-    export let disableTransition: boolean = false
+    export let disableTransition = false
 
-    let currentItem: number = 0
+    let currentItem = 0
     $: if (list.interval) startInterval()
-    let timeout: any = null
+    let timeout: NodeJS.Timeout | null = null
     function startInterval() {
         if (timeout) return
 
-        timeout = setTimeout(() => {
-            currentItem++
-            if (currentItem >= list.items.length) currentItem = 0
+        timeout = setTimeout(
+            () => {
+                currentItem++
+                if (currentItem >= list.items.length) currentItem = 0
 
-            timeout = null
-            if (list.interval) startInterval()
-        }, (list.interval || 1) * 1000)
+                timeout = null
+                if (list.interval) startInterval()
+            },
+            (list.interval || 1) * 1000
+        )
     }
 
     $: transition = disableTransition ? { type: "none" } : $transitionData.text

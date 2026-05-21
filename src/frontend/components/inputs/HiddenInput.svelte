@@ -1,18 +1,19 @@
 <script lang="ts">
     import { createEventDispatcher } from "svelte"
-    import { activeRename, dictionary } from "../../stores"
+    import { activeEdit, activePage, activeProject, activeRename, projectView } from "../../stores"
+    import { translateText } from "../../utils/language"
 
-    export let value: string = ""
-    export let style: string = ""
+    export let value = ""
+    export let style = ""
     export let id: string
-    export let allowEmpty: boolean = true
-    export let allowEdit: boolean = true
+    export let allowEmpty = true
+    export let allowEdit = true
 
     $: value = edit ? value.replaceAll("  ", " ") : value.trim()
 
     let nameElem: HTMLParagraphElement, inputElem: HTMLInputElement
     export let edit: boolean | string = false
-    let prevVal: string = ""
+    let prevVal = ""
     $: if (!edit && !value.length && prevVal.length) value = prevVal
     const click = (e: any) => {
         if (e.target === nameElem) {
@@ -21,8 +22,7 @@
             prevVal = value
             setTimeout(() => inputElem?.focus(), 10)
         } else if (e.target !== inputElem) {
-            edit = false
-            activeRename.set(null)
+            cancelEdit()
         }
     }
 
@@ -32,69 +32,99 @@
         // prevVal = value
     } else if ($activeRename === null) edit = false
 
-    let timeout: any
+    const HOLD_TIME = 700
+
+    let timeout: NodeJS.Timeout | null = null
     function mousedown(e: any) {
         if (e.target === nameElem && allowEdit) {
             timeout = setTimeout(() => {
                 click(e)
-            }, 500)
+            }, HOLD_TIME)
 
             return
         }
 
-        if (e.target.closest("input") || e.target.closest(".edit")) return
+        if (e.target.closest("input") || e.target.closest(".edit") || e.target.closest(".contextMenu")) return
+
+        cancelEdit()
+    }
+
+    function stopTimeout() {
+        if (timeout) clearTimeout(timeout)
+    }
+
+    function keydown(e) {
+        if (e.key === "Enter" || e.key === "Tab") {
+            if ($activeRename?.includes("project_") && $activeProject === $activeRename.slice($activeRename.indexOf("_") + 1)) {
+                setTimeout(() => projectView.set(false), 20)
+            }
+
+            cancelEdit()
+            return
+        }
+    }
+
+    let initiallyEmpty = false
+    $: if (id) updateState()
+    function updateState() {
+        initiallyEmpty = !value
+    }
+
+    const dispatch = createEventDispatcher()
+    function change(e: any) {
+        let value = (e.target?.value || "").trim()
+        if (allowEmpty || value.length) dispatch("edit", { value, id })
+
+        if (!initiallyEmpty || id.includes("category")) return
+
+        let objectId = id.slice(id.indexOf("_") + 1)
+        // open editor if no name (probably just created)
+        if (id.includes("template") || id.includes("overlay") || id.includes("effect")) {
+            let type: any = id.slice(0, id.indexOf("_"))
+            activeEdit.set({ type, id: objectId, items: [] })
+            activePage.set("edit")
+        }
+    }
+
+    $: editingActive = edit === id && allowEdit
+    function cancelEdit() {
+        if (!edit && $activeRename === null) return
+
+        // check if active rename actually exists anywhere
+        const renameIsActive = !!document.querySelector(".edit.nocontext._rename.name")
+        // can only be canceled by itself or any rename elem if it's not actually active
+        if (renameIsActive && !editingActive) return
 
         edit = false
         activeRename.set(null)
     }
 
-    function keydown(e) {
-        if (e.key === "Enter" || e.key === "Tab") {
-            edit = false
-            activeRename.set(null)
-
-            return
-        }
-
-        if (edit !== id) return
-
-        // disable space clicking on button
-        if (e.key !== " " || !e.target?.classList.contains("_rename")) return
-        e.preventDefault()
-
-        let pos = e.target.selectionStart
-        if (pos + 1 < value.length) value = value.trim()
-        value = value.slice(0, pos) + " " + value.slice(pos)
-        setTimeout(() => {
-            console.log(pos)
-            e.target.selectionStart = pos + 1
-            e.target.selectionEnd = pos + 1
-        })
-    }
-
-    const dispatch = createEventDispatcher()
-    function change(e: any) {
-        let value = e.target.value
-        if (allowEmpty || value.length) dispatch("edit", { value, id })
-    }
-
-    $: if (edit === id && allowEdit) setTimeout(selectText, 10)
+    $: if (editingActive) setTimeout(selectText, 10)
     function selectText() {
         inputElem?.select()
     }
 </script>
 
-<svelte:window on:mousedown={mousedown} on:mouseup={() => clearTimeout(timeout)} on:dragstart={() => clearTimeout(timeout)} on:keydown={keydown} />
+<svelte:window on:mousedown={mousedown} on:mouseup={stopTimeout} on:dragstart={stopTimeout} on:keydown={keydown} />
 <!-- on:contextmenu={click} -->
 
-{#if edit === id && allowEdit}
-    <input bind:this={inputElem} on:change={change} class="edit nocontext _rename name" bind:value />
+{#if editingActive}
+    <input
+        bind:this={inputElem}
+        {value}
+        on:change={change}
+        on:keydown={(e) => {
+            // stop space from triggering other keydown events
+            if (e.key === " ") e.stopPropagation()
+        }}
+        class="edit nocontext _rename name"
+    />
 {:else}
     <p {id} {style} bind:this={nameElem} class="_rename">
         {#if value.length}
             {value}
         {:else}
-            <span style="opacity: 0.5; pointer-events: none;">{$dictionary.main?.unnamed}</span>
+            <span style="opacity: 0.5;font-style: italic;pointer-events: none;">{translateText("main.unnamed")}</span>
         {/if}
     </p>
 {/if}
@@ -103,7 +133,7 @@
     p {
         margin: 5px;
         width: 100%;
-        text-align: left;
+        text-align: start;
         /* cursor: text; */
     }
     input {

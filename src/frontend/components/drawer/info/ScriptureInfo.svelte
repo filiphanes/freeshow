@@ -1,109 +1,78 @@
 <script lang="ts">
-    import { uid } from "uid"
-    import type { Bible } from "../../../../types/Scripture"
-    import type { Item, Show } from "../../../../types/Show"
-    import { ShowObj } from "../../../classes/Show"
-    import { activeProject, categories, drawerTabsData, outLocked, playScripture, scriptureSettings, templates } from "../../../stores"
+    import type { BibleContent } from "../../../../types/Scripture"
+    import type { Item } from "../../../../types/Show"
+    import { activeEdit, activePage, activePopup, activeScripture, activeStyle, drawerTabsData, outputs, popupData, scriptureSettings, settingsTab, styles, templates } from "../../../stores"
+    import { setDefaultScriptureTemplates } from "../../../utils/createData"
+    import { translateText } from "../../../utils/language"
+    import { confirmCustom } from "../../../utils/popup"
+    import { mediaExtensions } from "../../../values/extensions"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
+    import { clone } from "../../helpers/array"
     import { history } from "../../helpers/history"
-    import { setOutput } from "../../helpers/output"
-    import { checkName } from "../../helpers/show"
+    import { getAllNormalOutputs, getFirstActiveOutput } from "../../helpers/output"
+    import FloatingInputs from "../../input/FloatingInputs.svelte"
+    import InputRow from "../../input/InputRow.svelte"
     import Button from "../../inputs/Button.svelte"
-    import Checkbox from "../../inputs/Checkbox.svelte"
-    import Color from "../../inputs/Color.svelte"
-    import CombinedInput from "../../inputs/CombinedInput.svelte"
-    import Dropdown from "../../inputs/Dropdown.svelte"
-    import NumberInput from "../../inputs/NumberInput.svelte"
-    import Notes from "../../show/tools/Notes.svelte"
+    import Link from "../../inputs/Link.svelte"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
+    import MaterialColorInput from "../../inputs/MaterialColorInput.svelte"
+    import MaterialFilePicker from "../../inputs/MaterialFilePicker.svelte"
+    import MaterialNumberInput from "../../inputs/MaterialNumberInput.svelte"
+    import MaterialPopupButton from "../../inputs/MaterialPopupButton.svelte"
+    import MaterialTextarea from "../../inputs/MaterialTextarea.svelte"
+    import MaterialToggleSwitch from "../../inputs/MaterialToggleSwitch.svelte"
+    import Media from "../../output/layers/Media.svelte"
     import Textbox from "../../slide/Textbox.svelte"
     import Zoomed from "../../slide/Zoomed.svelte"
-    import { getShortBibleName, getSlides, joinRange, textKeys } from "../bible/scripture"
+    import { createScriptureShow, getActiveScripturesContent, getMergedAttribution, getScriptureSlidesNew, textKeys, useOldScriptureSystem } from "../bible/scripture"
 
-    export let bibles: Bible[]
-    $: sorted = bibles[0]?.activeVerses?.sort((a, b) => Number(a) - Number(b)) || []
+    let biblesContent: BibleContent[] = []
+    let selectedChapters: number[] = []
+    let selectedVerses: (number | string)[][] = []
 
-    let verseRange = ""
-    $: {
-        if (sorted.length) verseRange = joinRange(sorted)
-        else verseRange = ""
+    $: activeScriptureId = $drawerTabsData.scripture?.activeSubTab || ""
+
+    $: if (activeScriptureId || $activeScripture.reference) loadScriptureData()
+    async function loadScriptureData() {
+        const content = await getActiveScripturesContent()
+        if (content?.length) {
+            biblesContent = content
+            selectedChapters = biblesContent[0]?.chapters || []
+            selectedVerses = biblesContent[0]?.activeVerses || []
+        }
     }
 
     let slides: Item[][] = [[]]
 
-    $: if ($drawerTabsData) setTimeout(checkTemplate, 100)
-    function checkTemplate() {
-        if (!$scriptureSettings.template?.includes("scripture")) return
+    // background
+    $: templateId = styleScriptureTemplate || $scriptureSettings.template || "scripture" // $styles[styleId]?.templateScripture || ""
+    $: template = $templates[templateId] || {}
+    $: templateBackground = template.settings?.backgroundPath
 
-        let templateId = "scripture_" + bibles.length
+    // auto change template based on number of bibles (if default)
+    // if collection, but only one of the Bibles load, biblesContent will be length 1 & not change the template, which is fine, but maybe confusing
+    $: if (activeScriptureId || templateId || biblesContent.length) setTimeout(checkTemplate, 100)
+    $: isDefault = typeof templateId === "string" ? templateId.includes("scripture") && !templateId.includes("LT") : false
+    function checkTemplate() {
+        if (!isDefault || !biblesContent.length) return
+
+        let newTemplateId = "scripture_" + biblesContent.length
         scriptureSettings.update((a) => {
-            a.template = $templates[templateId] ? templateId : "scripture"
+            a.template = $templates[newTemplateId] ? newTemplateId : "scripture"
             return a
         })
     }
 
     $: {
-        if (sorted.length || $scriptureSettings) slides = getSlides({ bibles, sorted })
+        if (selectedVerses.length || $scriptureSettings) getSlides({ biblesContent, selectedChapters, selectedVerses })
         else slides = [[]]
     }
-
-    function createShow() {
-        if (verseRange) {
-            let { show } = createSlides()
-            if (!show) return
-            history({ id: "UPDATE", newData: { data: show, remember: { project: $activeProject } }, location: { page: "show", id: "show" } })
-        }
+    async function getSlides(data: any) {
+        slides = (await getScriptureSlidesNew(data, true)).slides
     }
 
-    function createSlides() {
-        if (!bibles[0]) return { show: null }
-
-        let slides2: any = {}
-        let layouts: any[] = []
-        slides.forEach((items: any) => {
-            let id = uid()
-            let firstTextItem = items.find((a) => a.lines)
-            slides2[id] = { group: firstTextItem?.lines?.[0]?.text?.[0]?.value?.split(" ")?.slice(0, 4)?.join(" ")?.trim() || "", color: null, settings: {}, notes: "", items }
-            let l: any = { id }
-            layouts.push(l)
-        })
-
-        let layoutID = uid()
-        // this can be set to private - to only add to project and not in drawer, because it's mostly not used again
-        let show: Show = new ShowObj(false, "scripture", layoutID, new Date().getTime(), $scriptureSettings.template || false)
-        // add scripture category
-        if (!$categories.scripture) {
-            categories.update((a) => {
-                a.scripture = { name: "category.scripture", icon: "scripture", default: true }
-                return a
-            })
-        }
-
-        let bibleShowName = `${bibles[0].book} ${bibles[0].chapter},${verseRange}`
-        show.name = checkName(bibleShowName)
-        if (show.name !== bibleShowName) show.name = checkName(`${bibleShowName} - ${getShortBibleName(bibles[0].version)}`)
-        show.slides = slides2
-        show.layouts = { [layoutID]: { name: bibles[0].version || "", notes: "", slides: layouts } }
-
-        let versions = bibles.map((a) => a.version).join(" + ")
-        show.reference = {
-            type: "scripture",
-            data: { collection: $drawerTabsData.scripture?.activeSubTab || bibles[0].id || "", version: versions, api: bibles[0].api, book: bibles[0].bookId ?? bibles[0].book, chapter: bibles[0].chapter, verses: bibles[0].activeVerses },
-        }
-
-        return { show }
-    }
-
-    const checked = (e: any) => {
-        let val = e.target.checked
-        let id = e.target.id
-        update(id, val)
-    }
-
-    let templateList: any[] = []
-    $: templateList = Object.entries($templates)
-        .map(([id, template]: any) => ({ id, name: template.name }))
-        .sort((a, b) => a.name.localeCompare(b.name))
+    $: showVersion = biblesContent.find((a) => a?.attributionRequired) || $scriptureSettings.showVersion
 
     function update(id: string, value: any) {
         scriptureSettings.update((a) => {
@@ -112,32 +81,11 @@
         })
 
         if (Object.keys(textKeys).includes(id)) updateCustomText(id, value)
-    }
 
-    function showVerse() {
-        if ($outLocked) return
-
-        let tempItems: Item[] = slides[0] || []
-        setOutput("slide", { id: "temp", tempItems })
-    }
-
-    $: if ($playScripture) {
-        showVerse()
-        playScripture.set(false)
-    }
-
-    // show on enter
-    function keydown(e: any) {
-        if (e.key !== "Enter") return
-        if (e.target.closest(".search")) {
-            showVerse()
-            return
-        }
-
-        if (!e.ctrlKey && !e.metaKey) return
-        if (e.target.closest("input") || e.target.closest(".edit")) return
-
-        showVerse()
+        if (id === "splitLongVerses") longVersesMenuOpened = value
+        else if (id === "verseNumbers") verseMenuOpened = value
+        else if (id === "redJesus") redMenuOpened = value
+        else if (id === "showVerse" || id === "showVersion") referenceMenuOpened = showVersion || $scriptureSettings.showVerse ? (value ? true : referenceMenuOpened) : false
     }
 
     // custom text
@@ -146,7 +94,9 @@
         let text = ""
 
         Object.keys(textKeys).forEach((key) => {
-            if ($scriptureSettings[key]) {
+            let isEnabled = $scriptureSettings[key]
+            if (key === "showVersion" && biblesContent.find((a) => a?.attributionRequired)) isEnabled = true
+            if (isEnabled) {
                 if (text.length) text += "\n"
                 text += textKeys[key]
             }
@@ -173,108 +123,260 @@
         if (!customText.split("\n")[0] && customText.length) customText = customText.replaceAll("\n", "")
         update("customText", customText)
     }
+
+    function editTemplate() {
+        if (styleScriptureTemplate) {
+            activeStyle.set(styleId)
+            settingsTab.set("styles")
+            activePage.set("settings")
+            return
+        }
+
+        // activeDrawerTab.set("templates")
+        // closeDrawer()
+        // drawerTabsData.update(a => {
+        //     a.template.activeSubTab = "all"
+        //     return a
+        // })
+        activeEdit.set({ type: "template", id: templateId, items: [] })
+        activePage.set("edit")
+    }
+
+    $: containsJesusWords = Object.values(biblesContent?.[0]?.verses?.[0] || {})?.find((text: any) => text?.includes('<span class="wj"') || text?.includes("<red") || text?.includes("color:red;") || text?.includes("!{"))
+
+    $: previousSlides = "{}"
+    let currentOutputSlides: any[] = []
+    $: if (slides?.[0] && JSON.stringify(slides[0]) !== previousSlides) {
+        currentOutputSlides = slides[0]
+        previousSlides = JSON.stringify(slides[0])
+    }
+
+    $: styleId = getFirstActiveOutput($outputs)?.style || ""
+    $: outputStyle = $styles[styleId]
+    $: background = $templates[templateId]?.settings?.backgroundColor || outputStyle?.background || "#000000"
+
+    $: attributionString = getMergedAttribution(biblesContent)
+
+    let longVersesMenuOpened = false
+    let verseMenuOpened = false
+    let redMenuOpened = false
+    let referenceMenuOpened = false
+
+    $: onlyOneNormalOutput = getAllNormalOutputs().length === 1
+    $: styleScriptureTemplate = onlyOneNormalOutput ? $styles[styleId]?.templateScripture || "" : ""
+
+    // auto convert
+    $: if (useOldSystem && usingDefault && (!styleScriptureTemplate || styleScriptureTemplate.includes("scripture"))) convertToNew()
+    $: useOldSystem = useOldScriptureSystem(templateId, $templates) && !styleScriptureTemplate
+    $: usingDefault = typeof templateId === "string" ? templateId.includes("scripture") : false
+    async function convertToNew() {
+        if (!usingDefault) {
+            if (!(await confirmCustom("This will apply the default template, and convert that to the new format. Your current template will not change.<br>You can use it as an example to adapt your existing templates. Continue?"))) return
+        }
+
+        setDefaultScriptureTemplates()
+        update("template", "scripture")
+        useOldSystem = false
+    }
+
+    let expanded = false
+    function toggleSection() {
+        expanded = !expanded
+    }
+
+    function setTemplateSettings(key: string, value: any) {
+        if (!templateId) return
+
+        let settings = template.settings || {}
+        settings[key] = value
+
+        let newData = { key: "settings", data: clone(settings) }
+
+        history({ id: "UPDATE", newData, oldData: { id: templateId }, location: { page: "edit", id: "template_settings", override: templateId } })
+    }
 </script>
 
-<svelte:window on:keydown={keydown} />
+<!-- scripture is for focusedArea -->
+<div class="scroll split scripture" style={useOldSystem ? "" : "padding-bottom: 46px;"}>
+    <Zoomed style="width: 100%;" {background}>
+        {#if selectedVerses.length}
+            {#if templateBackground}
+                <!-- WIP mediaStyle -->
+                <Media path={templateBackground} videoData={{ paused: false, muted: true, loop: true }} mirror />
+            {/if}
 
-<div class="scroll">
-    <Zoomed style="width: 100%;">
-        {#if bibles[0]?.activeVerses}
-            {#each slides[0] as item}
-                <Textbox {item} ref={{ id: "scripture" }} />
-            {/each}
+            {#key currentOutputSlides}
+                {#each currentOutputSlides as item}
+                    <Textbox {item} {outputStyle} ref={{ id: "scripture" }} />
+                {/each}
+            {/key}
+
+            {#if attributionString}
+                <p class="attributionString">{attributionString.slice(0, 135)}</p>
+            {/if}
         {/if}
     </Zoomed>
 
     <!-- settings -->
-    <div class="settings">
-        <CombinedInput textWidth={70}>
-            <p><T id="info.template" /></p>
-            <Dropdown options={templateList} value={$templates[$scriptureSettings.template]?.name || "—"} on:click={(e) => update("template", e.detail.id)} style="width: 30%;" />
-        </CombinedInput>
+    <div class="settings border">
+        <!-- Template -->
+        <InputRow style={templateBackground ? "" : "margin-bottom: 10px;"}>
+            <MaterialPopupButton id="scripture_drawer" label="info.template" disabled={!!styleScriptureTemplate} value={templateId} name={template?.name} popupId="select_template" icon="templates" on:change={(e) => update("template", e.detail)} allowEmpty={!isDefault} />
+            {#if (templateId && template) || styleScriptureTemplate}
+                <MaterialButton title="titlebar.edit" icon="edit" on:click={editTemplate} />
+            {/if}
+        </InputRow>
 
-        <CombinedInput textWidth={70}>
-            <p><T id="scripture.max_verses" /></p>
-            <NumberInput value={$scriptureSettings.versesPerSlide} min={1} max={100} on:change={(e) => update("versesPerSlide", e.detail)} buttons={false} />
-        </CombinedInput>
-
-        <CombinedInput textWidth={70}>
-            <p><T id="scripture.verse_numbers" /></p>
-            <div class="alignRight">
-                <Checkbox id="verseNumbers" checked={$scriptureSettings.verseNumbers} on:change={checked} />
-            </div>
-        </CombinedInput>
-        {#if $scriptureSettings.verseNumbers}
-            <CombinedInput>
-                <p><T id="edit.color" /></p>
-                <Color height={20} width={50} value={$scriptureSettings.numberColor || "#919191"} on:input={(e) => update("numberColor", e.detail)} />
-            </CombinedInput>
-            <CombinedInput>
-                <p><T id="edit.size" /></p>
-                <NumberInput value={$scriptureSettings.numberSize || 50} on:change={(e) => update("numberSize", e.detail)} />
-            </CombinedInput>
+        <!-- Template Settings - Quick Edit -->
+        {#if templateBackground}
+            <InputRow style="margin-bottom: 10px;border-left: 4px solid var(--primary-lighter);">
+                <MaterialFilePicker label="edit.background_media" value={templateBackground} filter={{ name: "Media files", extensions: mediaExtensions }} on:change={(e) => setTemplateSettings("backgroundPath", e.detail)} />
+            </InputRow>
         {/if}
 
-        <CombinedInput textWidth={70}>
-            <p><T id="scripture.red_jesus" /></p>
-            <div class="alignRight">
-                <Checkbox id="redJesus" checked={$scriptureSettings.redJesus} on:change={checked} />
-            </div>
-        </CombinedInput>
-        {#if $scriptureSettings.redJesus}
-            <CombinedInput>
-                <p><T id="edit.color" /></p>
-                <Color height={20} width={50} value={$scriptureSettings.jesusColor || "#FF4136"} on:input={(e) => update("jesusColor", e.detail)} />
-            </CombinedInput>
+        {#if useOldSystem || (styleScriptureTemplate ? useOldScriptureSystem(styleScriptureTemplate) : false)}
+            <p style="margin-bottom: 10px;font-size: 0.9rem;opacity: 0.7;white-space: normal;">
+                You are using a template with no scripture values! - <Link url="https://freeshow.app/docs/scripture#template">Read more</Link>
+            </p>
+        {/if}
+        {#if useOldSystem}
+            <MaterialButton variant="outlined" style="margin-bottom: 10px;" on:click={convertToNew}>
+                {#if usingDefault}
+                    Convert template to new system
+                {:else}
+                    Use default template
+                {/if}
+            </MaterialButton>
         {/if}
 
-        <br />
+        <div class="title">
+            <MaterialButton style="width: 100%;padding: 8px 12px;" on:click={() => toggleSection()}>
+                <span style="display: flex;gap: 8px;align-items: center;">
+                    <Icon id="options" white />
+                    <p>{translateText("edit.options")}</p>
+                </span>
 
-        <CombinedInput textWidth={70}>
-            <p><T id="scripture.reference" /></p>
-            <div class="alignRight">
-                <Checkbox id="showVerse" checked={$scriptureSettings.showVerse} on:change={checked} />
-            </div>
-        </CombinedInput>
-        <CombinedInput textWidth={70}>
-            <p><T id="scripture.version" /></p>
-            <div class="alignRight">
-                <Checkbox id="showVersion" checked={$scriptureSettings.showVersion} on:change={checked} />
-            </div>
-        </CombinedInput>
+                <Icon id="arrow_back_modern" class="arrow {expanded ? 'open' : ''}" size={0.6} style="opacity: 0.5;" white />
+            </MaterialButton>
+        </div>
 
-        {#if $scriptureSettings.showVersion || ($scriptureSettings.showVersion && $scriptureSettings.showVerse) || ($scriptureSettings.showVerse && customText.trim() !== "[reference]")}
-            <CombinedInput>
-                <Notes lines={2} value={customText} on:change={(e) => update("customText", e.detail)} />
-            </CombinedInput>
-        {/if}
+        {#if expanded}
+            <!-- Verse numbers -->
+            <InputRow arrow={useOldSystem && $scriptureSettings.verseNumbers} bind:open={verseMenuOpened}>
+                <MaterialToggleSwitch label="scripture.verse_numbers" style="width: 100%;" checked={$scriptureSettings.verseNumbers} on:change={(e) => update("verseNumbers", e.detail)} />
 
-        {#if $scriptureSettings.showVersion || $scriptureSettings.showVerse}
-            <CombinedInput textWidth={70}>
-                <p><T id="scripture.combine_with_text" /></p>
-                <div class="alignRight">
-                    <Checkbox id="combineWithText" checked={$scriptureSettings.combineWithText} on:change={checked} />
-                </div>
-            </CombinedInput>
-            {#if $scriptureSettings.combineWithText}
-                <CombinedInput textWidth={70}>
-                    <p><T id="scripture.reference_at_bottom" /></p>
-                    <div class="alignRight">
-                        <Checkbox id="referenceAtBottom" checked={$scriptureSettings.referenceAtBottom} on:change={checked} />
-                    </div>
+                <svelte:fragment slot="menu">
+                    {#if $scriptureSettings.verseNumbers}
+                        <MaterialColorInput label="edit.color" value={$scriptureSettings.numberColor || "#919191"} defaultValue="#919191" on:change={(e) => update("numberColor", e.detail)} />
+                        <MaterialNumberInput label="edit.size (%)" value={$scriptureSettings.numberSize || 50} defaultValue={50} on:change={(e) => update("numberSize", e.detail)} />
+                    {/if}
+                </svelte:fragment>
+            </InputRow>
+
+            <!-- {#if $scriptureSettings.versesOnIndividualLines || sorted.length > 1} -->
+            <MaterialToggleSwitch label="scripture.verses_on_individual_lines" checked={$scriptureSettings.versesOnIndividualLines} defaultValue={false} on:change={(e) => update("versesOnIndividualLines", e.detail)} />
+            <!-- {/if} -->
+
+            <!-- Long verses -->
+            <InputRow arrow={$scriptureSettings.splitLongVerses} bind:open={longVersesMenuOpened}>
+                <MaterialToggleSwitch label="scripture.divide_long_verses" style="width: 100%;" checked={$scriptureSettings.splitLongVerses} defaultValue={false} on:change={(e) => update("splitLongVerses", e.detail)} />
+
+                <svelte:fragment slot="menu">
+                    {#if $scriptureSettings.splitLongVerses}
+                        <MaterialToggleSwitch label="scripture.split_long_verses_suffix" checked={$scriptureSettings.splitLongVersesSuffix} defaultValue={false} on:change={(e) => update("splitLongVersesSuffix", e.detail)} />
+                        <MaterialNumberInput label="edit.size" value={$scriptureSettings.longVersesChars || 100} defaultValue={100} min={50} on:change={(e) => update("longVersesChars", e.detail)} />
+                        <MaterialNumberInput label="scripture.tolerance" value={$scriptureSettings.longVersesTolerance || 0} defaultValue={0} min={0} max={100} on:change={(e) => update("longVersesTolerance", e.detail)} />
+                    {/if}
+                </svelte:fragment>
+            </InputRow>
+
+            <!-- Red Jesus -->
+            {#if $scriptureSettings.redJesus || containsJesusWords}
+                <InputRow arrow={useOldSystem && $scriptureSettings.redJesus} bind:open={redMenuOpened}>
+                    <MaterialToggleSwitch label="scripture.red_jesus" style="width: 100%;" checked={$scriptureSettings.redJesus} defaultValue={false} on:change={(e) => update("redJesus", e.detail)} />
+
+                    <svelte:fragment slot="menu">
+                        {#if $scriptureSettings.redJesus}
+                            <MaterialColorInput label="edit.color" value={$scriptureSettings.jesusColor || "#FF4136"} defaultValue="#FF4136" on:change={(e) => update("jesusColor", e.detail)} />
+                        {/if}
+                    </svelte:fragment>
+                </InputRow>
+            {/if}
+
+            <!-- Reference options -->
+            {#if useOldSystem}
+                <InputRow style="margin-top: 10px;" arrow bind:open={referenceMenuOpened}>
+                    <MaterialToggleSwitch label="scripture.reference" style="width: 100%;" checked={$scriptureSettings.showVerse} defaultValue={true} on:change={(e) => update("showVerse", e.detail)} />
+                </InputRow>
+                <InputRow arrow bind:open={referenceMenuOpened}>
+                    <MaterialToggleSwitch label="scripture.version" disabled={!!biblesContent.find((a) => a?.attributionRequired)} style="width: 100%;" checked={showVersion} defaultValue={false} on:change={(e) => update("showVersion", e.detail)} />
+
+                    <svelte:fragment slot="menu">
+                        {#if showVersion || (showVersion && $scriptureSettings.showVerse) || ($scriptureSettings.showVerse && customText.trim() !== "[reference]")}
+                            <MaterialTextarea label="tools.layout" value={customText} rows={2} on:change={(e) => update("customText", e.detail)} />
+                        {/if}
+
+                        <!-- {#if $scriptureSettings.showVerse}
+                <CombinedInput>
+                    <p><T id="meta.text_divider" /></p>
+                    <TextInput value={$scriptureSettings.referenceDivider || ":"} on:change={(e) => update("referenceDivider", getTextValue(e))} />
                 </CombinedInput>
+            {/if} -->
+
+                        {#if showVersion || $scriptureSettings.showVerse}
+                            <!-- {#if !$scriptureSettings.firstSlideReference} -->
+                            <MaterialToggleSwitch label="scripture.combine_with_text" checked={$scriptureSettings.combineWithText} defaultValue={false} on:change={(e) => update("combineWithText", e.detail)} />
+                            {#if $scriptureSettings.combineWithText}
+                                <MaterialToggleSwitch label="scripture.reference_at_bottom" checked={$scriptureSettings.referenceAtBottom} defaultValue={false} on:change={(e) => update("referenceAtBottom", e.detail)} />
+                            {/if}
+                            <!-- {/if} -->
+
+                            <!-- <br /> -->
+                            <!-- WIP Unwanted: -->
+                            {#if !$scriptureSettings.combineWithText}
+                                <MaterialToggleSwitch label="edit.invert_items" checked={$scriptureSettings.invertItems} defaultValue={false} on:change={(e) => update("invertItems", e.detail)} />
+                            {/if}
+                        {/if}
+                    </svelte:fragment>
+                </InputRow>
+            {:else}
+                <!-- new -->
+                <MaterialNumberInput label="scripture.max_verses" style="margin-top: 10px;" value={$scriptureSettings.versesPerSlide} defaultValue={3} min={1} max={100} on:change={(e) => update("versesPerSlide", e.detail)} hideWhenZero />
             {/if}
         {/if}
     </div>
 </div>
 
-<Button on:click={createShow} style="width: 100%;" disabled={!verseRange} dark center>
-    <Icon id="show" right />
-    <T id="new.show" />
-    {#if slides.length > 1}
-        <span style="opacity: 0.5;margin-left: 0.5em;">({slides.length})</span>
-    {/if}
-</Button>
+{#if useOldSystem}
+    <InputRow>
+        <Button on:click={createScriptureShow} style="width: 100%;" disabled={!selectedVerses.length} dark center>
+            <Icon id="slide" right />
+            <T id="new.show_convert" />
+            <!-- {#if slides.length > 1}
+            <span style="opacity: 0.5;margin-inline-start: 0.5em;">({slides.length})</span>
+        {/if} -->
+        </Button>
+
+        <Button
+            title={translateText("popup.scripture_show")}
+            on:click={() => {
+                const showVersion = biblesContent.find((a) => a?.attributionRequired) || $scriptureSettings.showVersion
+                popupData.set({ showVersion })
+                activePopup.set("scripture_show")
+            }}
+            dark
+            center
+        >
+            <Icon id="options" white />
+        </Button>
+    </InputRow>
+{:else}
+    <FloatingInputs onlyOne>
+        <MaterialButton icon="slide" title="new.show_convert [Ctrl+N]" on:click={() => createScriptureShow()}>
+            <T id="new.show_convert" />
+        </MaterialButton>
+    </FloatingInputs>
+{/if}
 
 <style>
     .scroll {
@@ -285,7 +387,7 @@
         overflow-x: hidden;
     }
 
-    div :global(.zoomed) {
+    div.scroll :global(.zoomed) {
         height: initial !important;
     }
 
@@ -293,11 +395,55 @@
         display: flex;
         flex-direction: column;
         padding: 10px;
+        flex: 1;
     }
 
     .settings :global(.dropdown) {
+        /* position: absolute; */
+        width: 160%;
+        inset-inline-end: 0;
+    }
+
+    .attributionString {
         position: absolute;
-        width: 250% !important;
-        transform: translateX(-60%);
+        bottom: 15px;
+        left: 50%;
+        transform: translateX(-50%);
+
+        font-size: 28px;
+        font-style: italic;
+        opacity: 0.7;
+    }
+
+    /* title */
+
+    .title {
+        background-color: var(--primary-darker);
+        border-bottom: 1px solid var(--primary-lighter);
+
+        border-top-left-radius: 10px;
+        border-top-right-radius: 10px;
+        overflow: hidden;
+    }
+    .title p {
+        font-weight: 500;
+        font-size: 0.8rem;
+        opacity: 0.8;
+    }
+
+    .title :global(button) {
+        display: flex;
+        justify-content: space-between;
+
+        /* when disabled */
+        opacity: 1;
+    }
+
+    .title :global(svg.arrow) {
+        transition: 0.1s transform ease;
+        transform: rotate(180deg);
+    }
+    .title :global(svg.arrow.open) {
+        transform: rotate(-90deg);
     }
 </style>

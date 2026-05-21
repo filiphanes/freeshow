@@ -1,12 +1,13 @@
 <script lang="ts">
     import { onDestroy, onMount } from "svelte"
-    import { MAIN } from "../../../../types/Channels"
-    import { activeShow, outLocked, playingAudio } from "../../../stores"
+    import { Main } from "../../../../types/IPC/Main"
+    import { AudioMicrophone } from "../../../audio/audioMicrophone"
+    import { sendMain } from "../../../IPC/main"
+    import { activeFocus, activeShow, focusMode, playingAudio } from "../../../stores"
     import Icon from "../../helpers/Icon.svelte"
-    import { clearAudioStreams, startMicrophone } from "../../helpers/audio"
     import Button from "../../inputs/Button.svelte"
 
-    export let mic: any
+    export let mic: { id: string; name: string }
 
     // https://dobrian.github.io/cmp/topics/sample-recording-and-playback-with-web-audio-api/1.loading-and-playing-sound-files.html
 
@@ -27,15 +28,15 @@
 
     // registerProcessor("processor", MyAudioProcessor);
 
-    let soundLevel: number = 0
+    let soundLevel = 0
 
-    let audioStream: any
-    let context: any
-    let source: any
-    // let gainNode: any
-    let audio: any
+    let audioStream: MediaStream | undefined
+    let context: AudioContext | undefined
+    let source: MediaStreamAudioSourceNode | undefined
+    // let gainNode
+    let audio: HTMLAudioElement | undefined
 
-    const handleSuccess = function (stream: any) {
+    const handleSuccess = function (stream: MediaStream) {
         audioStream = stream
         context = new AudioContext()
         source = context.createMediaStreamSource(stream)
@@ -72,34 +73,29 @@
         audio.srcObject = stream
         audio.play()
         audio.volume = 0
-        console.log(audio)
-
-        // TODO: add this to audioChannels / audioAnalyzer
     }
 
-    onMount(capture)
+    let retryTimeout: NodeJS.Timeout | null = null
 
+    onMount(capture)
     function capture() {
         navigator.mediaDevices
-            .getUserMedia({
-                audio: {
-                    deviceId: { exact: mic.id },
-                },
-            })
+            .getUserMedia({ audio: { deviceId: { exact: mic.id } } })
             .then(handleSuccess)
             .catch((err) => {
-                console.log(err)
+                console.error(err)
                 if (err.name === "NotReadableError") {
-                    window.api.send(MAIN, { channel: "ACCESS_MICROPHONE_PERMISSION" })
+                    sendMain(Main.ACCESS_MICROPHONE_PERMISSION)
                 }
 
                 // retry
-                setTimeout(capture, 5000)
+                retryTimeout = setTimeout(capture, 5000)
             })
     }
 
     onDestroy(() => {
-        audioStream?.getAudioTracks().forEach((track: any) => track.stop())
+        audioStream?.getAudioTracks().forEach((track) => track.stop())
+        if (retryTimeout) clearTimeout(retryTimeout)
     })
 
     $: muted = !$playingAudio[mic.id]
@@ -111,22 +107,14 @@
         bold={false}
         disabled={!context}
         on:click={() => {
-            if ($outLocked || !context) return
-
-            if (muted) {
-                startMicrophone(mic)
-                return
-            }
-
-            playingAudio.update((a) => {
-                delete a[mic.id]
-                return a
-            })
-            clearAudioStreams(mic.id)
+            if (!context) return
+            AudioMicrophone.start(mic.id, { name: mic.name }, { pauseIfPlaying: true })
         }}
         on:dblclick={(e) => {
             if (e.ctrlKey || e.metaKey) return
-            activeShow.set({ id: mic.id, name: mic.name, type: "audio", data: { isMic: true } })
+
+            if ($focusMode) activeFocus.set({ id: mic.id, type: "audio" })
+            else activeShow.set({ id: mic.id, name: mic.name, type: "audio", data: { isMic: true } })
         }}
     >
         <span style="display: flex;gap: 5px;flex: 3;align-items: center;">
@@ -148,7 +136,7 @@
         display: flex;
     }
     .main:nth-child(even) {
-        background-color: var(--primary-darkest);
+        background-color: rgb(0 0 20 / 0.08);
     }
 
     .meter {

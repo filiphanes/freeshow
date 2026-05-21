@@ -2,27 +2,27 @@
 // Options for electron windows
 // https://www.electronjs.org/docs/latest/api/browser-window
 
+import type { BrowserWindowConstructorOptions } from "electron"
 import { join } from "path"
 import { isMac, isProd } from ".."
 
-export const loadingOptions: any = {
+export const loadingOptions: BrowserWindowConstructorOptions = {
     width: 500,
-    height: 300,
+    height: 280,
     icon: "public/icon.png",
-    backgroundColor: "#292c36",
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
     frame: false,
     webPreferences: {
         nodeIntegration: true,
-        contextIsolation: false,
-    },
+        contextIsolation: false
+    }
 }
 
-export const mainOptions: any = {
+export const mainOptions: BrowserWindowConstructorOptions = {
     icon: "public/icon.png",
-    backgroundColor: "#292c36",
+    backgroundColor: "#242832",
     titleBarStyle: isMac ? "hidden" : "default",
     trafficLightPosition: { x: 10, y: 12 }, // mac buttons
     show: false,
@@ -34,10 +34,11 @@ export const mainOptions: any = {
         contextIsolation: true,
         allowRunningInsecureContent: false,
         webviewTag: true, // website item
-    },
+        backgroundThrottling: false // allow "timers" to run in background
+    }
 }
 
-export const outputOptions: any = {
+export const outputOptions: BrowserWindowConstructorOptions = {
     icon: "public/icon.png",
     backgroundColor: "#000000",
     transparent: true,
@@ -46,29 +47,29 @@ export const outputOptions: any = {
     resizable: false, // disable resizing on mac and windows
     frame: false, // hide title/buttons
     skipTaskbar: true, // hide from taskbar
-    offscreen: true, // offscreen rendering
     hasShadow: false,
     enableLargerThanScreen: true, //
+    titleBarStyle: "default", // on mac, electron uses hiddenInset otherwise, which results in rounded corners
 
     // fullscreen: true,
     // type: "toolbar", // hide from taskbar
     // titleBarStyle: "hidden", // hide titlebar
     // kiosk: true, // fixed window over menu bar
     // roundedCorners: false, // disable rounded corners on mac
+    // thickFrame: false, // remove window shadow and window animations on Windows
     webPreferences: {
         preload: join(__dirname, "..", "preload"),
-        devTools: !isProd,
         webSecurity: isProd,
         nodeIntegration: !isProd,
         contextIsolation: true,
         allowRunningInsecureContent: false,
         webviewTag: true,
         backgroundThrottling: false,
-        autoplayPolicy: "no-user-gesture-required",
-    },
+        autoplayPolicy: "no-user-gesture-required"
+    }
 }
 
-export const screenIdentifyOptions: any = {
+export const screenIdentifyOptions: BrowserWindowConstructorOptions = {
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
@@ -77,21 +78,39 @@ export const screenIdentifyOptions: any = {
     hasShadow: false,
     webPreferences: {
         nodeIntegration: !isProd,
-        contextIsolation: false,
-    },
+        contextIsolation: false
+    }
 }
 
-export const exportOptions: any = {
+export const exportOptions: BrowserWindowConstructorOptions = {
     // show: !isProd,
     show: false,
     modal: true,
+    frame: false,
     webPreferences: {
         preload: join(__dirname, "..", "preload"),
         webSecurity: isProd,
         nodeIntegration: !isProd,
         // contextIsolation: true,
         // enableRemoteModule: false,
+        autoplayPolicy: "no-user-gesture-required"
+    }
+}
+
+export const captureOptions: BrowserWindowConstructorOptions = {
+    show: false,
+    backgroundColor: "#000000",
+    frame: false,
+    skipTaskbar: true,
+    webPreferences: {
+        preload: join(__dirname, "..", "preload"),
+        webSecurity: isProd,
+        nodeIntegration: !isProd,
+        contextIsolation: true,
+        allowRunningInsecureContent: false,
+        webviewTag: true,
         backgroundThrottling: false,
         autoplayPolicy: "no-user-gesture-required",
-    },
+        offscreen: true
+    }
 }

@@ -1,0 +1,117 @@
+import { app, screen, type BrowserWindow } from "electron"
+import path from "path"
+import { isProd, isWindows, setAutoProfile } from ".."
+import { catchErrors } from "../IPC/responsesMain"
+import { detectNewFiles, doesPathExist } from "./files"
+import { initSpotify } from "./spotify"
+
+export function parseCommandLineArgs() {
+    const result: { profile?: string } = {}
+    if (!isProd) return result
+
+    const args = process.argv.slice(1)
+    for (const arg of args) {
+        // support --profile=Name & -p=Name
+        if (arg.startsWith("--profile=")) result.profile = arg.substring("--profile=".length)
+        else if (arg.startsWith("-p=")) result.profile = arg.substring("-p=".length)
+    }
+
+    setAutoProfile(result.profile || "")
+
+    return result
+}
+
+// get LOADED message from frontend
+export function mainWindowInitialize() {
+    // midi
+    // createVirtualMidi()
+
+    // servers are now started earlier in parallel in startApp() - no need to require here
+    // require("../servers")
+
+    // set app title to app name
+    if (isWindows) app.setAppUserModelId(app.name)
+
+    detectNewFiles()
+
+    initSpotify()
+
+    if (!isProd) return
+
+    catchErrors()
+}
+
+export function openDevTools(window: BrowserWindow) {
+    console.info('Opening DevTools... ("[ERROR:CONSOLE] Request Autofill" can be ignored)')
+    window.webContents.openDevTools()
+    // ERROR:CONSOLE(1)] "Request Autofill.enable failed. - can be ignored:
+    // https://github.com/electron/electron/issues/41614
+}
+
+// wait until the main bundle exists or dev server is ready
+export function waitForBundle() {
+    const BUNDLE_PATH = path.resolve(__dirname, "..", "..", "..", "public/build/bundle.js")
+    const CHECK_INTERVAL = 2 // every 2 seconds
+    let tries = 0
+
+    return new Promise((resolve) => {
+        const interval = setInterval(() => {
+            // Check if bundle file exists - old Rollup code, only production build for Vite
+            if (doesPathExist(BUNDLE_PATH)) {
+                console.info("Main bundle found! Loading interface...")
+                clearInterval(interval)
+                resolve(true)
+                return
+            }
+
+            // For development, just wait a short time and assume Vite is ready
+            // console.log(`Development mode: waiting for Vite to be ready... (attempt ${tries + 1})`)
+            // if resolved before ready app will never load!
+            if (tries >= 3) {
+                // console.info("Assuming Vite dev server is ready! Loading interface...")
+                clearInterval(interval)
+                resolve(true)
+                return
+            }
+
+            tries += 1
+            if (tries >= 60) {
+                // 60 * 2 seconds = 120 seconds total timeout
+                clearInterval(interval)
+                app.quit()
+                throw new Error("Could not load app content. Please check console for any errors!")
+            }
+        }, CHECK_INTERVAL * 1000)
+    })
+}
+
+export function isWithinDisplayBounds(pos: { x: number; y: number }) {
+    const displays = screen.getAllDisplays()
+    return displays.reduce((result, display) => {
+        const area = display.workArea
+        return result || (pos.x >= area.x && pos.y >= area.y && pos.x < area.x + area.width && pos.y < area.y + area.height)
+    }, false)
+}
+
+// check if draggable top area of the window is visible and accessible on any display (to prevent windows from being inaccessible and unmovable)
+export function isDraggableAreaVisible(bounds: { x: number; y: number }, width: number) {
+    const displays = screen.getAllDisplays()
+    const TITLE_BAR_HEIGHT = 35 // approximated
+
+    return displays.some((display) => {
+        const area = display.workArea
+
+        // Check if title bar rectangle intersects with display work area
+        const windowLeft = bounds.x
+        const windowRight = bounds.x + width
+        const windowTop = bounds.y
+        const windowTitleBottom = bounds.y + TITLE_BAR_HEIGHT
+
+        const displayLeft = area.x
+        const displayRight = area.x + area.width
+        const displayTop = area.y
+        const displayBottom = area.y + area.height
+
+        return windowLeft < displayRight && windowRight > displayLeft && windowTop < displayBottom && windowTitleBottom > displayTop
+    })
+}

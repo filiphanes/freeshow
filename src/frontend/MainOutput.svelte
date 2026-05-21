@@ -1,47 +1,75 @@
 <script lang="ts">
+    import { onMount } from "svelte"
+    import { fade } from "svelte/transition"
     import { OUTPUT } from "../types/Channels"
     import type { Resolution } from "../types/Settings"
     import { getResolution } from "./components/helpers/output"
     import Output from "./components/output/Output.svelte"
     import { getStyleResolution } from "./components/slide/getStyleResolution"
-    import StageShow from "./components/stage/StageShow.svelte"
-    import { currentWindow, outputs, special, styles } from "./stores"
+    import StageLayout from "./components/stage/StageLayout.svelte"
+    import { currentWindow, livePrepare, outputs, special, styles } from "./stores"
     import { hideDisplay } from "./utils/common"
+    import { send } from "./utils/request"
+
+    $: outputId = Object.keys($outputs)[0]
 
     // get output resolution
-    let width: number = 0
-    let height: number = 0
+    let width = 0
+    let height = 0
     let resolution: Resolution = getResolution()
     $: if ($currentWindow === "output") resolution = getResolution(null, { $outputs, $styles }, true)
 
+    // $: outputStyle = getCurrentStyle($styles, $outputs[outputId]?.style)
+
     // enable output window dragging
-    let enableOutputMove: boolean = false
-    function mousemoveOutput(e: any) {
-        if (e.ctrlKey || e.metaKey || e.target.closest(".dragger")) enableOutputMove = true
+    let enableOutputMove = false
+    function mousemoveOutput(e: MouseEvent) {
+        if ($outputs[outputId]?.boundsLocked || $special.hideCursor) return
+        if (e.ctrlKey || e.metaKey || e.target?.closest(".dragger")) enableOutputMove = true
         else enableOutputMove = false
     }
-    $: if ($currentWindow === "output") window.api.send(OUTPUT, { channel: "MOVE", data: { enabled: enableOutputMove } })
+    $: if ($currentWindow === "output") send(OUTPUT, ["MOVE"], { enabled: enableOutputMove })
+
+    // make sure it's loaded to prevent output not changing to stage output because of Svelte transition bug
+    let loaded = false
+    onMount(() => {
+        setTimeout(() => {
+            loaded = true
+        }, 2000)
+    })
 </script>
 
 <div
     class="fill context #output_window"
-    style="flex-direction: {getStyleResolution(resolution, width, height, 'fit').includes('width') && !Object.values($outputs)[0].stageOutput ? 'row' : 'column'}"
+    style="flex-direction: {getStyleResolution(resolution, width, height, 'fit').includes('width') && !Object.values($outputs)[0]?.stageOutput ? 'row' : 'column'};"
     class:hideCursor={$special.hideCursor}
     on:mousemove={mousemoveOutput}
     bind:offsetWidth={width}
     bind:offsetHeight={height}
-    on:dblclick={() => hideDisplay()}
+    on:dblclick={(e) => {
+        if (e.target?.closest(".website") || e.target?.closest(".clickable")) return
+        hideDisplay()
+    }}
 >
     {#if enableOutputMove}
         <div class="dragger">
             <p>Drag window</p>
         </div>
     {/if}
-    {#if Object.values($outputs)[0].stageOutput}
-        <StageShow stageId={Object.values($outputs)[0].stageOutput} edit={false} />
-    {:else}
-        <Output style={getStyleResolution(resolution, width, height, "fit")} center />
+
+    {#if $outputs[outputId]?.stageOutput}
+        <StageLayout {outputId} stageId={$outputs[outputId].stageOutput} edit={false} />
+    {:else if loaded}
+        <Output {outputId} style={getStyleResolution(resolution, width, height, "fit")} />
     {/if}
+
+    <!-- black overlay for live preparation/changes -->
+    {#if $livePrepare[outputId]}
+        <div class="blackOverlay" transition:fade></div>
+    {/if}
+
+    <!-- preload CMGSans font -->
+    {#if !loaded}<div class="fontPreload">.</div>{/if}
 </div>
 
 <style>
@@ -73,5 +101,23 @@
 
     .fill.hideCursor {
         cursor: none;
+    }
+
+    .fontPreload {
+        font-family: "CMGSans";
+        position: absolute;
+        opacity: 0;
+    }
+
+    .blackOverlay {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+
+        width: 100%;
+        height: 100%;
+
+        background-color: black;
     }
 </style>

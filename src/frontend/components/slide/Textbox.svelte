@@ -1,92 +1,153 @@
 <script lang="ts">
-    import { onMount } from "svelte"
-    import type { Item } from "../../../types/Show"
-    import { currentWindow, overlays, showsCache, slidesOptions, templates, variables, volume } from "../../stores"
-    import { custom } from "../../utils/transitions"
-    import Cam from "../drawer/live/Cam.svelte"
-    import Image from "../drawer/media/Image.svelte"
-    import { getAutoSize } from "../edit/scripts/autoSize"
-    import Icon from "../helpers/Icon.svelte"
+    import { createEventDispatcher, onDestroy, onMount, tick } from "svelte"
+    import { OUTPUT } from "../../../types/Channels"
+    import type { Styles } from "../../../types/Settings"
+    import type { Item, Slide, TemplateStyleOverride, Transition } from "../../../types/Show"
+    import { currentWindow, groups, outputs, overlays, scriptureSettings, showsCache, styles, templates, variables } from "../../stores"
+    import { wait } from "../../utils/common"
+    import { send } from "../../utils/request"
+    import autosize from "../edit/scripts/autosize"
+    import { getItemText } from "../edit/scripts/textStyle"
     import { clone } from "../helpers/array"
-    import { getExtension, getMediaType } from "../helpers/media"
-    import { _show } from "../helpers/shows"
+    import { getActiveOutputs, getFirstActiveOutput, getOutputResolution, percentageStylePos } from "../helpers/output"
+    import { getNumberVariables } from "../helpers/showActions"
     import { getStyles } from "../helpers/style"
-    import Clock from "../system/Clock.svelte"
-    import DynamicEvents from "./views/DynamicEvents.svelte"
-    import ListView from "./views/ListView.svelte"
-    import Mirror from "./views/Mirror.svelte"
-    import Timer from "./views/Timer.svelte"
-    import Variable from "./views/Variable.svelte"
-    import Visualizer from "./views/Visualizer.svelte"
-    import Website from "./views/Website.svelte"
-    import { replaceDynamicValues } from "../helpers/showActions"
+    import SlideItems from "./SlideItems.svelte"
+    import TextboxLines from "./TextboxLines.svelte"
+    import { readAutoSizeCache, writeAutoSizeCache } from "./autosizeCache"
 
     export let item: Item
-    export let itemIndex: number = -1
-    export let slideIndex: number = 0
-    export let preview: boolean = false
-    export let mirror: boolean = true
-    export let ratio: number = 1
-    export let filter: string = ""
-    export let backdropFilter: string = ""
-    export let key: boolean = false
-    export let disableListTransition: boolean = false
-    export let smallFontSize: boolean = false
-    export let addDefaultItemStyle: boolean = false
-    export let transitionEnabled: boolean = false
+    export let itemIndex = -1
+    export let slideIndex = 0
+    export let preview = false
+    export let fontPreview = false
+    export let isTemplatePreview = false
+    export let mirror = true
+    export let isMirrorItem = false
+    export let ratio = 1
+    export let outputId = ""
+    export let filter = ""
+    export let backdropFilter = ""
+    export let key = false
+    export let transition: Transition | null = null
+    export let disableListTransition = false
+    export let smallFontSize = false
     export let animationStyle: any = {}
+    export let dynamicValues = true
+    export let isStage = false
+    export let originalStyle = false
+    export let useOriginalTextColor = false
     export let customFontSize: number | null = null
-    export let outputStyle: any = {}
+    export let outputStyle: Styles | null = null
     export let ref: {
         type?: "show" | "stage" | "overlay" | "template"
         showId?: string
         slideId?: string
         layoutId?: string
+        origin?: string
         id: string
     }
-    export let style: boolean = true
+    export let style = true
+    export let customStyle = ""
     export let stageItem: any = {}
-    export let chords: boolean = false
+    export let chords = false
     export let linesStart: null | number = null
     export let linesEnd: null | number = null
-    export let stageAutoSize: boolean = false
-    export let fontSize: number = 0
+    export let clickRevealed = false
+    export let stageAutoSize = false
+    export let fontSize = 0
+    export let maxLines = 0 // stage next item preview
+    export let maxLinesInvert = false // stage next item preview (last lines)
+    export let centerPreview = false
+    export let revealed = -1
+    export let styleIdOverride = ""
+    // expose an optional key so parents can track autosize readiness per item
+    export let autoSizeKey = ""
+    export let updateDynamicValues = true
 
-    // let height: number = 0
-    // let width: number = 0
-    // $: autoSize = item.lines ? Math.min(height, width) / (item.lines.length + 3) : Math.min(height, width) / 2
-    // TODO: get template auto size
-    // $: autoTextSize = autoSize ? autoSize * 0.8 : getAutoSize(item)
-    // $: autoSize = autoSize || getAutoSize(item)
+    // reuse autosize work across components by caching measurements alongside a signature
+    // surface measurement completion for parents that want to precompute autosize
+    const dispatch = createEventDispatcher<{
+        autosizeReady: { key: string; fontSize: number }
+    }>()
 
-    $: autoSize = item.autoFontSize || getAutoSize(item)
+    $: lines = clone(item?.lines)
+    $: if (linesStart !== null && linesEnd !== null && lines?.length) {
+        lines = lines.filter((a) => a.text.filter((a) => a.value !== undefined)?.length)
 
-    $: lines = item?.lines
-    $: if (linesStart !== null && linesEnd !== null && lines?.length) lines = lines.filter((a) => a.text.filter((a) => a.value.length)?.length)
+        // show last possible lines if no text at current line
+        if (!lines[linesStart]) {
+            let linesCount = linesEnd - linesStart
+            let length = lines.length - 1
+            let index = length - (length % linesCount)
+            linesStart = index
+            linesEnd = index + linesCount
+        }
+    }
 
     // timer updater
-    let today = new Date()
     let loaded = false
-    onMount(() => {
-        setTimeout(() => (loaded = true), 100)
+    let dateInterval: NodeJS.Timeout | null = null
+    // track readiness to avoid duplicate events for the same render cycle
+    let autoSizeReady = false
+    // hold onto whether the visible output should stay hidden until autosize finishes
+    let hideUntilAutosized = false
 
-        if (item.type !== "timer") return
-        setInterval(() => (today = new Date()), 500)
+    let hideSafetyTimeout: NodeJS.Timeout | null = null
+    $: if (hideUntilAutosized) {
+        if (hideSafetyTimeout) clearTimeout(hideSafetyTimeout)
+        hideSafetyTimeout = setTimeout(() => {
+            if (hideUntilAutosized) {
+                hideUntilAutosized = false
+                // markAutoSizeReady() // Ensure state is consistent
+            }
+        }, 600)
+    } else {
+        if (hideSafetyTimeout) clearTimeout(hideSafetyTimeout)
+        hideSafetyTimeout = null
+    }
+
+    // remember which item signature we already reset local font size for
+    let lastRenderedSignature = ""
+    onMount(() => {
+        if (preview || fontPreview) {
+            // Defer slightly to ensure DOM layout is ready for measurement, preventing 0-width errors
+            setTimeout(() => (loaded = true), 20)
+        } else setTimeout(() => (loaded = true), 100)
+    })
+    onDestroy(() => {
+        if (dateInterval) clearInterval(dateInterval)
+        if (loopStop) clearTimeout(loopStop)
+        if (paddingCorrTimeout) clearTimeout(paddingCorrTimeout)
     })
 
     // $: if (item.type === "timer") ref.id = item.timer!.id!
 
-    function getAlphaStyle(style: string) {
-        if (!key) return style
-        let styles = getStyles(style)
+    let customOutputId = outputId
+    $: if (!outputId) customOutputId = getActiveOutputs($outputs, true, true, true)[0]
 
+    function getCustomStyle(currentStyle: string, outputId = "", styleIdOverride = "", _updater: any = null) {
+        if (outputId && !isMirrorItem && !isStage) {
+            let outputResolution = getOutputResolution(outputId, $outputs, true, styleIdOverride)
+            currentStyle = percentageStylePos(currentStyle, outputResolution)
+        }
+
+        // reset item styles (as it's set in parent item)
+        if (isStage && !originalStyle) {
+            currentStyle += "display: contents;"
+        }
+
+        if (!key) return currentStyle
+        let styles = getStyles(currentStyle)
+
+        // alpha style
         let alphaStyles = ";"
         let bgAlpha = getAlphaValues(styles["background-color"])
         let textAlpha = getAlphaValues(styles["color"]) || 1
         if (bgAlpha) alphaStyles += "background-color: rgb(255 255 255 / " + bgAlpha + ");"
         alphaStyles += "color: rgb(255 255 255 / " + textAlpha + ");"
 
-        return style + alphaStyles
+        return currentStyle + alphaStyles
     }
 
     function getAlphaValues(colorValue: string) {
@@ -110,486 +171,680 @@
         return 1
     }
 
-    $: lineGap = item?.specialStyle?.lineGap
-    $: lineBg = item?.specialStyle?.lineBg
+    // WORD OVERRIDE
 
-    // actions
-    $: if ((preview || $currentWindow === "output") && item?.actions) runActions()
-    function runActions() {
-        Object.keys(item?.actions).forEach((action) => {
-            if (actions[action]) actions[action](item?.actions[action])
-        })
+    // grab any template level overrides so we can re-use them later
+    let templateStyleOverrides: TemplateStyleOverride[] = []
+    let slideData: Slide | null = null
+    let groupTemplateId = ""
+    let resolvedTemplateId = ""
+    let scriptureSettingsTemplateId = ""
+    let showReference: any = null
+    let isScriptureContext = false
+    let scriptureTranslationKey = ""
+    let styleScriptureTemplateId = ""
+    $: slideData = (() => {
+        if (!ref?.showId) return null
+        const slideId = ref.slideId || ref.id
+        if (!slideId) return null
+        return ($showsCache[ref.showId]?.slides?.[slideId] as Slide) || null
+    })()
+    // remember show-level reference metadata so we can identify scripture flows
+    $: showReference = (() => {
+        if (!ref?.showId) return null
+        return $showsCache[ref.showId]?.reference || null
+    })()
+    $: groupTemplateId = (() => {
+        if (!slideData) return ""
+        const groupId = slideData.globalGroup && slideData.globalGroup !== "none" ? slideData.globalGroup : slideData.group
+        if (!groupId) return ""
+
+        // pick up template supplied by group overrides (if present)
+        return $groups[groupId]?.template || ""
+    })()
+    // scripture slides can come from drawer preview or a stored show reference
+    $: isScriptureContext = (() => {
+        if (ref?.id === "scripture" || ref?.showId === "temp") return true
+        return (showReference?.type || "") === "scripture"
+    })()
+    // translation count dictates which style-specific template should apply
+    $: scriptureTranslationKey = isScriptureContext ? buildScriptureTranslationKey(showReference) : ""
+    // prefer the output-style scripture template when the current output overrides scripture layouts
+    $: styleScriptureTemplateId = (() => {
+        if (!isScriptureContext || !outputStyle) return ""
+        const translationTemplate = scriptureTranslationKey ? (outputStyle[`templateScripture${scriptureTranslationKey}` as keyof Styles] as string | undefined) : undefined
+        return translationTemplate || outputStyle.templateScripture || ""
+    })()
+    // fall back to the template captured when the scripture show was created
+    $: scriptureSettingsTemplateId = (() => {
+        if (ref?.id === "scripture" || ref?.showId === "temp") return $scriptureSettings.template || ""
+        return ""
+    })()
+    // track whether this textbox belongs to the first slide for the active layout
+    let isFirstLayoutSlide = false
+    $: isFirstLayoutSlide = (() => {
+        if (!ref?.showId) return false
+        const slideId = ref.slideId || ref.id
+        if (!slideId) return false
+        const layoutId = ref.layoutId || $showsCache[ref.showId]?.settings?.activeLayout || ""
+        if (!layoutId) return false
+        const layout = $showsCache[ref.showId]?.layouts?.[layoutId]
+        const firstId = layout?.slides?.[0]?.id || ""
+        return !!firstId && firstId === slideId
+    })()
+
+    function resolveTemplate(baseId: string) {
+        if (!baseId) return ""
+        if (isFirstLayoutSlide) {
+            // templates can specify a dedicated cover/first slide template; pick it when we are on that slide
+            const firstSlideTemplateId = $templates[baseId]?.settings?.firstSlideTemplate || ""
+            if (firstSlideTemplateId) return firstSlideTemplateId
+        }
+        return baseId
     }
 
-    // TODO: overlay gets reset when a new slide is activated
-    let hidden: boolean = false
-    const actions = {
-        showTimer: (duration: number) => {
-            hidden = true
-            setTimeout(() => {
-                hidden = false
-            }, duration * 1000)
-        },
-        hideTimer: (duration: number) => {
-            setTimeout(() => {
-                hidden = true
-            }, duration * 1000)
-        },
+    $: resolvedTemplateId = (() => {
+        if (ref?.type === "template" && ref.id) return ref.id
+        if (ref?.type === "overlay") return ""
+        if (slideData?.settings?.template) return slideData.settings.template
+
+        // favor output-driven templates first so overrides don't bleed between outputs
+        const styleResolved = resolveTemplate(isScriptureContext ? styleScriptureTemplateId : outputStyle?.template || "")
+        if (styleResolved) return styleResolved
+
+        // group templates provide per-group defaults
+        const groupResolved = resolveTemplate(groupTemplateId)
+        if (groupResolved) return groupResolved
+
+        const showResolved = resolveTemplate(currentShowTemplateId)
+        if (showResolved) return showResolved
+
+        // finally fall back to the template captured when the scripture show was generated
+        const scriptureResolved = resolveTemplate(scriptureSettingsTemplateId)
+        if (scriptureResolved) return scriptureResolved
+
+        return ""
+    })()
+    // WIP this will update the output immediately when template changes, but shouldn't update until refreshing
+    $: templateStyleOverrides = (() => {
+        // ensure overrides follow whichever template actually drives this slide
+        if (!resolvedTemplateId) return []
+
+        return clone($templates[resolvedTemplateId]?.settings?.styleOverrides || [])
+    })()
+
+    // convert translation metadata into the suffix used by templateScripture_* settings
+    function buildScriptureTranslationKey(reference: any) {
+        const translationCount = getScriptureTranslationCount(reference)
+        if (translationCount <= 1) return ""
+        const limitedCount = Math.min(4, translationCount)
+        return `_${limitedCount}`
     }
 
-    $: textAnimation = animationStyle.text || ""
-
-    $: transition = transitionEnabled && item.actions?.transition && item.actions.transition.type !== "none" && item.actions.transition.duration > 0
-    $: itemTransition = transition ? clone(item.actions.transition) : {}
-    $: if (itemTransition.type === "none") itemTransition = { duration: 0, type: "fade", easing: "linear" }
+    // count how many translations are present for the current scripture selection
+    function getScriptureTranslationCount(reference: any) {
+        if (!reference?.data) return 1
+        if (reference.data.translations) return Number(reference.data.translations) || 1
+        const versionList = typeof reference.data.version === "string" ? reference.data.version.split("+") : []
+        return versionList.filter((value) => value.trim().length).length || 1
+    }
 
     // AUTO SIZE
 
-    let alignElem: any
-    let loopStop = false
-    const MAX_FONT_SIZE = 800
-    const MIN_FONT_SIZE = 10
+    let itemElem: HTMLElement | undefined
 
     let previousItem = "{}"
     $: newItem = JSON.stringify(item)
-    $: itemAutoSize = item.auto
-    $: itemAutoFontSize = item.autoFontSize
-    $: if (alignElem && loaded && (stageAutoSize || newItem !== previousItem || chordLines)) {
-        // set smaller text for easier reading while calculating new size
-        if ((itemAutoSize && !itemAutoFontSize) || outputTemplateAutoSize || stageAutoSize) fontSize = 70
-        setTimeout(getCustomAutoSize, 150)
+    // Combine content and template to detect all layout-affecting changes
+    $: stateSignature = newItem + "|" + resolvedTemplateId
+
+    $: if (stateSignature !== lastRenderedSignature) {
+        autoSizeReady = false
+        // Check if autosize is active - for STAGE, use stageAutoSize since slide items don't have auto/textFit set
+        const hasAutoSize = stageAutoSize || item?.auto || (item?.textFit || "none") !== "none"
+        if (hasAutoSize) {
+            // Determine if we'll hide during autosize calculation
+            const willHide = shouldHideUntilAutoSizeCompletes()
+
+            // CRITICAL: Start with fontSize=0 when hiding to prevent giant text flash:
+            // - STAGE: Always starts at 0 (computes for STAGE dimensions, not OUTPUT)
+            // - OUTPUT: Starts at 0 if cache is invalid (willHide=true), otherwise uses cache
+            // - PREVIEW: Uses own previewAutoFontSize cache, or OUTPUT cache as fallback, or 100px default
+            if (isStage) {
+                fontSize = 0
+            } else if (willHide) {
+                // Cache is invalid - start at 0 to avoid displaying wrong fontSize while recalculating
+                fontSize = 0
+            } else if (preview || fontPreview) {
+                // Preview uses its own cache, fallback to OUTPUT cache, then default
+                fontSize = item?.previewAutoFontSize || item?.autoFontSize || 100
+            } else {
+                // OUTPUT uses its cache
+                fontSize = item?.autoFontSize || 0
+            }
+
+            lastRenderedSignature = stateSignature
+            hideUntilAutosized = willHide
+        }
     }
+    // Trigger calculation if Content OR Template changes (resolvedTemplateId added to dependency list)
+    // All contexts (OUTPUT, STAGE, PREVIEW) calculate and cache their own autosize independently
+    $: if (itemElem && loaded && (stageAutoSize || newItem !== previousItem || resolvedTemplateId || chordLines || stageItem)) calculateAutosize()
+    $: if ($variables) setTimeout(calculateAutosize)
 
     // recalculate auto size if output template is different than show template
-    $: currentShowTemplateId = _show(ref.showId).get("settings.template")
-    let outputTemplateAutoSize = false
-    $: if ($currentWindow === "output" && outputStyle.template && outputStyle.template !== currentShowTemplateId && !stageAutoSize) getCustomAutoSize(true)
-    else outputTemplateAutoSize = false
+    $: currentShowTemplateId = $showsCache[ref.showId || ""]?.settings?.template || ""
+    // let outputTemplateAutoSize = false
+    $: outputSlide = getFirstActiveOutput($outputs)?.out?.slide
+    $: if (item?.type === "slide_tracker" && outputSlide) setTimeout(calculateAutosize) // overlay progress update
+    $: if ($currentWindow === "output" && outputStyle?.template && outputStyle.template !== currentShowTemplateId && !stageAutoSize) calculateAutosize()
+    // else outputTemplateAutoSize = false
 
-    function getCustomAutoSize(force: boolean = false) {
-        if (!item) return
+    // $: fontSizeValue = stageAutoSize || item.auto || outputTemplateAutoSize ? fontSize : fontSize
 
-        if (force === true) {
-            let template = $templates[outputStyle.template || ""]
-            let firstTextItem = template.items?.find((a) => a.lines)
-            let textStyle = firstTextItem?.lines?.[0]?.text?.[0]?.style || ""
-            let styleObj = getStyles(textStyle, true)
-
-            if (!firstTextItem?.auto && !item?.auto) return
-
-            item.autoFontSize = firstTextItem?.auto || item.auto ? 0 : Number(styleObj["font-size"]) || 80
-            autoSize = item.autoFontSize
-            outputTemplateAutoSize = true
+    let customTypeRatio = 1
+    function deriveCustomTypeRatio() {
+        if (isStage) {
+            // Search all lines to find disableTemplate items (verse numbers may not be in first line)
+            let allText: any[] = []
+            stageItem?.lines?.forEach((line) => {
+                if (line?.text) allText.push(...line.text)
+            })
+            if (!allText.length) return 1
+            const verseItemText = allText.filter((a) => a.customType?.includes("disableTemplate")) || []
+            if (!verseItemText.length) return 1
+            const verseItemSize = Number(getStyles(verseItemText[0]?.style, true)?.["font-size"] || "") || 0
+            const stageFontSize = Number(getStyles(stageItem?.style, true)?.["font-size"] || "") || 100
+            return stageFontSize ? verseItemSize / stageFontSize || 1 : 1
         }
 
-        previousItem = JSON.stringify(item)
+        // Search all lines to find disableTemplate items (verse numbers may not be in first line)
+        let allText: any[] = []
+        item?.lines?.forEach((line) => {
+            if (line?.text) allText.push(...line.text)
+        })
+        if (!allText.length) return 1
+        const verseItemText = allText.filter((a) => a.customType?.includes("disableTemplate")) || []
+        if (!verseItemText.length) return 1
+        const verseItemSize = Number(getStyles(verseItemText[0]?.style, true)?.["font-size"] || "") || 0
+        return verseItemSize ? verseItemSize / 100 || 1 : 1
+    }
+    $: customTypeRatio = deriveCustomTypeRatio()
 
-        if (loopStop || !loaded || !alignElem || (!stageAutoSize && !outputTemplateAutoSize && (!item.auto || item.autoFontSize))) {
-            if (item.auto && item.autoFontSize) fontSize = item.autoFontSize
+    let loopStop: NodeJS.Timeout | null = null
+    let newCall = false
+    async function calculateAutosize() {
+        if (item.type === "media" || item.type === "camera" || item.type === "icon") return
+        if (isStage && !stageAutoSize) {
             return
         }
-        loopStop = true
-        // cacheText = true
 
-        fontSize = MAX_FONT_SIZE
-        addStyleToElemText(fontSize)
+        if (loopStop) {
+            // is this new call necessary?
+            newCall = true
+            return
+        }
+        loopStop = setTimeout(() => {
+            loopStop = null
+            if (newCall) calculateAutosize()
+            newCall = false
+        }, 200)
+        previousItem = newItem
 
-        // syncronus don't work
-        // await calculateFontSize()
-        // function calculateFontSize() {
-        //     return new Promise((resolve) => {
-        //         checkFontSize()
-        //         function checkFontSize() {
-        //             fontSize--
-        //             addStyleToElemText(fontSize)
+        // Wait for DOM to update with new template styles before measuring
+        await tick()
 
-        //             if (fontSize > MIN_FONT_SIZE && (alignElem.scrollHeight > alignElem.offsetHeight || alignElem.scrollWidth > alignElem.offsetWidth)) setTimeout(checkFontSize)
-        //             else resolve(true)
-        //         }
-        //     })
+        // Wait for web fonts to load before measuring (prevents wrong dimensions from fallback fonts)
+        try {
+            await document.fonts.ready
+        } catch (e) {
+            // Font loading check failed, continue anyway
+        }
+
+        // Wait for CSS styles to fully cascade and layout to stabilize before measuring
+        // This ONLY adds delay when element dimensions are still changing (unstable layout)
+        // Once dimensions stabilize, no additional waiting occurs
+        if (itemElem) {
+            let prevWidth = itemElem.clientWidth
+            let prevHeight = itemElem.clientHeight
+            let attempts = 0
+            const maxAttempts = 20
+            let totalWait = 0
+            const maxWait = 500 // Maximum 500ms - reasonable buffer for slow computers without painful delays
+
+            // Output window needs longer initial wait for CSS cascade in separate Electron window
+            const isOutputContext = ratio < 0.5 && !preview && !fontPreview && !isStage
+
+            while (attempts < maxAttempts && totalWait < maxWait) {
+                const waitTime = attempts === 0 ? (isOutputContext ? 150 : 100) : attempts === 1 ? 50 : 20
+                await wait(waitTime)
+                totalWait += waitTime
+
+                // Check if element still exists after waiting
+                if (!itemElem) {
+                    return // Element destroyed, abort calculation
+                }
+
+                const newWidth = itemElem.clientWidth
+                const newHeight = itemElem.clientHeight
+
+                if (newWidth === prevWidth && newHeight === prevHeight) {
+                    // Dimensions stable - stop waiting
+                    break
+                }
+
+                prevWidth = newWidth
+                prevHeight = newHeight
+                attempts++
+            }
+        }
+
+        let defaultFontSize
+        let maxFontSize
+
+        const isTextItem = (item.type || "text") === "text"
+        const isDynamic = isTextItem && getItemText(isStage ? stageItem : item).includes("{")
+        let textFit = item.textFit || (item.auto ? (isTextItem ? "shrinkToFit" : "growToFit") : "none")
+
+        if (isStage) {
+            // wait for text content to populate if dynamic value
+            if (isDynamic) await wait(10)
+            if (stageItem?.type !== "text") textFit = stageItem?.textFit || "growToFit"
+
+            // const textItem = isTextItem ? item?.lines?.[0]?.text || [] : stageItem
+            let itemFontSize = Number(getStyles(stageItem?.style, true)?.["font-size"] || "") || 100
+
+            defaultFontSize = itemFontSize
+            if (textFit === "growToFit" && itemFontSize !== 100) maxFontSize = itemFontSize
+        } else {
+            if (isTextItem && textFit === "none") {
+                fontSize = 0
+                return
+            }
+
+            // Search all lines to find disableTemplate items and regular text (verse numbers may not be in first line)
+            let allText: any[] = []
+            item?.lines?.forEach((line) => {
+                if (line?.text && Array.isArray(line.text)) allText.push(...line.text)
+            })
+            const itemText = allText.filter((a) => !a.customType?.includes("disableTemplate")) || []
+            let itemFontSize = Number(getStyles(itemText[0]?.style, true)?.["font-size"] || "") || 100
+
+            // get scripture verse ratio
+            const verseItemText = allText.filter((a) => a.customType?.includes("disableTemplate")) || []
+            const verseItemSize = Number(getStyles(verseItemText[0]?.style, true)?.["font-size"] || "") || 0
+            customTypeRatio = verseItemSize / 100 || 1
+
+            defaultFontSize = itemFontSize
+            if (textFit === "growToFit" && isTextItem && itemFontSize > 100) maxFontSize = itemFontSize
+        }
+
+        let elem = itemElem
+        if (!elem) return
+
+        // short-circuit expensive DOM work when we already measured identical content
+        const cacheKey = buildAutoSizeCacheKey()
+        const cacheSignature = buildAutoSizeSignature(elem.clientWidth, elem.clientHeight)
+        const cachedResult = cacheKey ? readAutoSizeCache(cacheKey) : undefined
+
+        if (!isDynamic && !chords && !Number(outputStyle?.lines || 0) && cachedResult && cachedResult.signature === cacheSignature) {
+            fontSize = cachedResult.fontSize
+            if (item.type === "slide_tracker") {
+                markAutoSizeReady()
+                return
+            }
+            if (fontSize !== item.autoFontSize) setItemAutoFontSize(fontSize)
+            markAutoSizeReady()
+            return
+        }
+
+        let textQuery = ""
+        if (isTextItem) {
+            elem = elem.querySelector(".align") as HTMLElement
+            if (!elem) return
+            textQuery = ".lines .break span"
+        } else {
+            textFit = "growToFit"
+            if (item.type === "slide_tracker") textQuery = ".progress div"
+        }
+        // not working due to stage SlideText "loading" elem?
+        // if (isStage) {
+        //     elem = itemElem?.closest(".stage_item")
+        //     textQuery = ".align .item .align " + textQuery
         // }
 
-        // quick search (double divide)
-        // WIP duplicate of autoSize.ts
-        let lowestValue = MIN_FONT_SIZE
-        let highestValue = MAX_FONT_SIZE
-        let biggerThanSize = true
-        while (highestValue - lowestValue > 3) {
-            let difference = (highestValue - lowestValue) / 2
-            if (biggerThanSize) {
-                highestValue = fontSize
-                fontSize -= difference
-            } else {
-                lowestValue = fontSize
-                fontSize += difference
-            }
-
-            addStyleToElemText(fontSize)
-            biggerThanSize = alignElem.scrollHeight > alignElem.offsetHeight || alignElem.scrollWidth > alignElem.offsetWidth
-        }
-        fontSize = lowestValue // prefer lowest value
-
-        function addStyleToElemText(fontSize: number) {
-            for (let linesElem of alignElem.children) {
-                for (let breakElem of linesElem.children) {
-                    for (let txt of breakElem.children) {
-                        txt.style.fontSize = fontSize + "px"
-                    }
-                }
-            }
+        try {
+            fontSize = autosize(elem, {
+                type: textFit,
+                textQuery,
+                defaultFontSize,
+                maxFontSize,
+                isList: item?.list?.enabled || false
+            })
+        } catch (e) {
+            console.error(e)
         }
 
-        setTimeout(() => {
-            loopStop = false
-        }, 100)
+        // smaller in general if bullet list, because they are not accounted for
+        if (item?.list?.enabled) fontSize *= 0.9
 
-        if (stageAutoSize || itemIndex < 0 || $currentWindow) return
+        if (item.type === "slide_tracker") {
+            if (cacheKey) writeAutoSizeCache(cacheKey, { signature: cacheSignature, fontSize })
+            markAutoSizeReady()
+            return
+        }
+        // Store in separate field for previews vs OUTPUT
+        if ((preview || fontPreview) && fontSize !== item.previewAutoFontSize) setItemPreviewAutoFontSize(fontSize)
+        if (fontSize !== item.autoFontSize) setItemAutoFontSize(fontSize)
+        if (!isDynamic && cacheKey) writeAutoSizeCache(cacheKey, { signature: cacheSignature, fontSize })
 
-        // UPDATE item
+        markAutoSizeReady()
+    }
+
+    // generate a stable key scoped to the item and current output context
+    function buildAutoSizeCacheKey() {
+        if (!autoSizeKey && !ref?.id) return ""
+        const base = autoSizeKey || `${ref?.id || ""}-${item?.id || itemIndex}`
+        const target = isStage ? "stage" : ref?.type || "show"
+        return `${target}:${base}`
+    }
+
+    // capture the bits of state that influence autosize outcomes for cache invalidation
+    function buildAutoSizeSignature(measuredWidth?: number, measuredHeight?: number) {
+        // Extract key dimensional properties from style to ensure cache invalidation
+        const styles = item?.style ? getStyles(item.style) : {}
+        const boxDimensions: any = {
+            width: styles.width,
+            height: styles.height,
+            left: styles.left,
+            top: styles.top,
+            fontSize: styles["font-size"]
+        }
+
+        // Fix for thumbnails getting stuck with wrong cache when dimensions change via CSS classes
+        if (preview || fontPreview) {
+            boxDimensions.measuredWidth = measuredWidth
+            boxDimensions.measuredHeight = measuredHeight
+        }
+
+        // Fix for OUTPUT getting stuck with wrong cache when output window dimensions change
+        // Include container dimensions to invalidate cache when OUTPUT resolution/size changes
+        if (!preview && !fontPreview && !isStage && itemElem) {
+            const container = itemElem.parentElement
+            if (container) {
+                boxDimensions.containerWidth = container.clientWidth
+                boxDimensions.containerHeight = container.clientHeight
+            }
+        }
+
+        return JSON.stringify({
+            lines: item?.lines,
+            style: item?.style,
+            boxDimensions, // Add explicit dimensions for better cache invalidation
+            textFit: item?.textFit,
+            list: item?.list,
+            chords,
+            stageAutoSize,
+            stageItem,
+            fontSizeOverride: customFontSize,
+            ratio,
+            outputStyle,
+            styleIdOverride,
+            mirror,
+            preview: preview || fontPreview,
+            smallFontSize,
+            maxLines,
+            maxLinesInvert,
+            centerPreview,
+            // Include resolved template to invalidate cache when template changes
+            resolvedTemplateId
+        })
+    }
+
+    // notify listeners that autosize finished (and stash readiness for this render)
+    function markAutoSizeReady() {
+        if (autoSizeReady) return
+        autoSizeReady = true
+        if (autoSizeKey) dispatch("autosizeReady", { key: autoSizeKey, fontSize })
+        if (hideUntilAutosized) requestAnimationFrame(() => (hideUntilAutosized = false))
+    }
+
+    // determine whether we should keep the visible textbox hidden while autosize runs
+    function shouldHideUntilAutoSizeCompletes() {
+        // NOTE: Stage uses its own loading mechanism in SlideText.svelte (.loading class)
+        // but for the first render, that mechanism shows nothing while the new content loads
+        // We need to hide content until autosize is ready for stage too
+        if (preview || fontPreview) return false
+        const type = item?.type || "text"
+        if (type !== "text") return false
+
+        // Use detailed validation to ensure we catch all autosize candidates
+        // For STAGE: stageAutoSize controls autosize, slide items don't have auto/textFit set
+        const isExplicitNone = item?.textFit === "none"
+        const isExplicitActive = item?.textFit && item?.textFit !== "none"
+        const isImpliedActive = !item?.textFit && item?.auto
+        const isStageAutoSizeActive = stageAutoSize
+
+        if (!isStageAutoSizeActive && (isExplicitNone || (!isExplicitActive && !isImpliedActive))) {
+            return false
+        }
+
+        // CHECK CACHE
+        const cacheKey = buildAutoSizeCacheKey()
+        const cacheSignature = buildAutoSizeSignature()
+        const cachedResult = cacheKey ? readAutoSizeCache(cacheKey) : undefined
+
+        const hasValidCache = cachedResult && cachedResult.signature === cacheSignature
+
+        if (hasValidCache) {
+            return false
+        }
+
+        return true
+    }
+
+    function setItemAutoFontSize(fontSize) {
+        if (isStage || itemIndex < 0 || $currentWindow || ref.showId === "temp") return
 
         if (ref.type === "overlay") {
             overlays.update((a) => {
+                if (!a[ref.id]?.items?.[itemIndex]) return a
                 a[ref.id].items[itemIndex].autoFontSize = fontSize
                 return a
             })
         } else if (ref.type === "template") {
             templates.update((a) => {
+                if (!a[ref.id]?.items?.[itemIndex]) return a
                 a[ref.id].items[itemIndex].autoFontSize = fontSize
                 return a
             })
         } else if (ref.showId) {
             showsCache.update((a) => {
+                if (!a[ref.showId!]?.slides?.[ref.id]?.items?.[itemIndex]) return a
+
                 a[ref.showId!].slides[ref.id].items[itemIndex].autoFontSize = fontSize
                 return a
             })
         }
     }
 
-    // CACHE TO PREVENT SHOWING AUTO TEXT CHANGING SIZES
+    function setItemPreviewAutoFontSize(fontSize) {
+        if (isStage || itemIndex < 0 || $currentWindow || ref.showId === "temp") return
 
-    let cacheText: boolean = false
-    let cachedLines: string = ""
-    // $: if (cacheText) startTextCaching()
-    // TODO: function startTextCaching() {
-    //     if (!alignElem) return
+        if (ref.type === "overlay") {
+            overlays.update((a) => {
+                if (!a[ref.id]?.items?.[itemIndex]) return a
+                a[ref.id].items[itemIndex].previewAutoFontSize = fontSize
+                return a
+            })
+        } else if (ref.type === "template") {
+            templates.update((a) => {
+                if (!a[ref.id]?.items?.[itemIndex]) return a
+                a[ref.id].items[itemIndex].previewAutoFontSize = fontSize
+                return a
+            })
+        } else if (ref.showId) {
+            showsCache.update((a) => {
+                if (!a[ref.showId!]?.slides?.[ref.id]?.items?.[itemIndex]) return a
 
-    //     setTimeout(() => {
-    //         cacheText = false
-    //         cachedLines = alignElem.querySelector(".lines")?.outerHTML
-    //     }, 1000)
-    // }
+                a[ref.showId!].slides[ref.id].items[itemIndex].previewAutoFontSize = fontSize
+                return a
+            })
+        }
+    }
 
     // CHORDS
 
-    let chordLines: string[] = []
-    $: if (chords && item.lines) createChordLines()
+    let chordLines: any[] = []
+    $: if (chords && (item.lines || fontSize)) createChordLines()
     function createChordLines() {
         chordLines = []
+        if (!Array.isArray(item?.lines)) return
 
-        item.lines!.forEach((line, i) => {
+        item.lines.forEach((line) => {
             if (!line.chords?.length || !line.text) return
-
-            let chords = clone(line.chords || [])
-
-            let html = ""
-            let index = 0
-            line.text.forEach((text) => {
-                let value = text.value.trim().replaceAll("\n", "") || ""
-
-                let letters = value.split("")
-                letters.forEach((letter) => {
-                    let chordIndex = chords.findIndex((a: any) => a.pos === index)
-                    if (chordIndex >= 0) {
-                        html += `<span class="chord">${chords[chordIndex].key}</span>`
-                        chords.splice(chordIndex, 1)
-                    }
-
-                    html += `<span class="invisible" style="${style ? getAlphaStyle(text.style) : ""}${fontSizeValue ? `font-size: ${fontSizeValue};` : ""}">${letter}</span>`
-
-                    index++
-                })
-            })
-
-            chords.forEach((chord: any, i: number) => {
-                html += `<span class="chord" style="transform: translateX(${60 * (i + 1)}px);">${chord.key}</span>`
-            })
-
-            if (!html) return
-            chordLines[i] = html
+            chordLines.push(line.chords)
         })
     }
 
-    $: if (chords && !stageItem && item?.auto && fontSize) fontSize *= 0.7
-    $: fontSizeValue = stageAutoSize || item.auto || outputTemplateAutoSize ? (fontSize || autoSize) + "px" : fontSize ? fontSize + "px" : ""
+    // WIP padding can be checked by auto size if style is added to parent
+    let paddingCorrTimeout: NodeJS.Timeout | null = null
+    function getPaddingCorrection(stageItem: any) {
+        let result = ""
+        if (typeof stageItem?.style !== "string") return ""
+        if (stageItem.style.indexOf("padding") > -1) {
+            let styles = stageItem.style.split(";")
+            styles.forEach((s: string) => {
+                if (s.indexOf("padding") === 0) {
+                    let padding = parseInt(s.split(":")[1].replace("px", "").trim(), 0) * 2
+                    if (padding > 0) result = "width: calc(100% - " + padding + "px); height: calc(100% - " + padding + "px);"
+                }
+            })
+        }
+
+        if (paddingCorrTimeout) clearTimeout(paddingCorrTimeout)
+        paddingCorrTimeout = setTimeout(calculateAutosize, 150)
+
+        return result
+    }
 
     $: isDisabledVariable = item?.type === "variable" && $variables[item?.variable?.id]?.enabled === false
+    let paddingCorrection = ""
+    $: paddingCorrection = getPaddingCorrection(stageItem)
+
+    function press() {
+        if ($currentWindow !== "output") return
+        if (!item.button?.press) return
+
+        send(OUTPUT, ["ACTION_MAIN"], { id: item.button.press })
+    }
+
+    function release() {
+        if ($currentWindow !== "output") return
+        if (!item.button?.release) return
+
+        send(OUTPUT, ["ACTION_MAIN"], { id: item.button.release })
+    }
+
+    // give CSS access to number variable values
+    $: cssVariables = getNumberVariables($variables, $outputs)
+
+    // initialize default filter values to get the transition working (should use animation)
+    // https://stackoverflow.com/questions/68632554/css-backdrop-filter-does-not-work-with-transition
+    let noTransition = !transition || (transition.type || "none") === "none" || transition.duration === 0
+    // const defaultValues = "opacity(1) saturate(1) contrast(1) brightness(1) blur(0px) invert(0) hue-rotate(0deg)"
+    // let foregroundFiltersValues = `${filter ? "filter: " + filter + ";" : ""}${backdropFilter ? "backdrop-filter: " + backdropFilter + ";" : ""}`
+    // let foregroundFiltersDefault = `${filter ? "filter: " + defaultValues + ";" : ""}${backdropFilter ? "backdrop-filter: " + defaultValues + ";" : ""}`
+    // let foregroundFilters = foregroundFiltersValues ? (noTransition ? foregroundFiltersValues : foregroundFiltersDefault) : ""
+    // setTimeout(() => (foregroundFilters = foregroundFiltersValues))
+    $: foregroundFilters = `${filter ? "filter: " + filter + ";" : ""}${backdropFilter ? "backdrop-filter: " + backdropFilter + ";" : ""}`
+
+    // fixed letter width
+    $: fixedWidth = item?.type === "timer" || item?.type === "clock" ? "font-feature-settings: 'tnum' 1;" : ""
+
+    // display duration
+    // WIP not using transitions at the moment
+    let hidden = false
+    let hideTimeout: NodeJS.Timeout | null = null
+    $: displayDuration = item?.actions?.displayDuration || 0
+    $: if (displayDuration && clickRevealed) {
+        hidden = false
+        if (hideTimeout) clearTimeout(hideTimeout)
+        hideTimeout = setTimeout(() => {
+            hidden = true
+        }, displayDuration * 1000)
+    }
+
+    $: noTextMode = ref?.type === "template" && $templates[ref?.id]?.settings?.mode === "item"
+
+    $: normalWrap = ref?.origin === "powerpoint"
 </script>
 
-<!-- svelte transition bug!!! -->
-{#if transition && !hidden}
-    <div
-        class="item"
-        style="{style ? getAlphaStyle(item?.style) : null};transition: filter 500ms, backdrop-filter 500ms;{filter ? 'filter: ' + filter + ';' : ''}{backdropFilter ? 'backdrop-filter: ' + backdropFilter + ';' : ''}{animationStyle.item || ''}"
-        class:white={key && !lines?.length}
-        class:key
-        class:addDefaultItemStyle
-        class:isDisabledVariable
-        transition:custom={itemTransition}
-    >
-        {#if lines}
-            <div
-                class="align"
-                class:topBottomScrolling={item?.scrolling?.type === "top_bottom"}
-                class:bottomTopScrolling={item?.scrolling?.type === "bottom_top"}
-                class:leftRightScrolling={item?.scrolling?.type === "left_right"}
-                class:rightLeftScrolling={item?.scrolling?.type === "right_left"}
-                style={style ? item.align : null}
-                bind:this={alignElem}
-            >
-                <div
-                    class="lines"
-                    class:cacheText
-                    style="{style && lineGap ? `gap: ${lineGap}px;` : ''}{smallFontSize || customFontSize !== null ? '--font-size: ' + (smallFontSize ? (-1.1 * $slidesOptions.columns + 12) * 5 : customFontSize) + 'px;' : ''}{textAnimation}"
-                >
-                    {#each lines as line, i}
-                        {#if linesStart === null || linesEnd === null || (i >= linesStart && i < linesEnd)}
-                            {#if chords && chordLines[i]}
-                                <div class:first={i === 0} class="break chords" style="--chord-size: {stageItem?.chordsData?.size || item.chords?.size || 30}px;--chord-color: {stageItem?.chordsData?.color || item.chords?.color || '#FF851B'};">
-                                    {@html chordLines[i]}
-                                </div>
-                            {/if}
-                            <!-- class:height={!line.text[0]?.value.length} -->
-                            <div class="break" class:smallFontSize={smallFontSize || customFontSize || textAnimation.includes("font-size")} style="{style && lineBg ? `background-color: ${lineBg};` : ''}{style ? line.align : ''}">
-                                {#each line.text || [] as text}
-                                    {@const value = text.value.replaceAll("\n", "<br>") || "<br>"}
-                                    <span style="{style ? getAlphaStyle(text.style) : ''}{fontSizeValue ? `font-size: ${fontSizeValue};` : ''}">
-                                        {@html value.includes("{") ? replaceDynamicValues(value, { showId: ref.showId, layoutId: ref.layoutId, slideIndex }) : value}
-                                    </span>
-                                {/each}
-                            </div>
-                        {/if}
-                    {/each}
-                </div>
-
-                {#if cacheText}
-                    {@html cachedLines}
-                {/if}
-            </div>
-        {:else if item?.type === "list"}
-            <ListView list={item.list} disableTransition={disableListTransition} />
-        {:else if item?.type === "media"}
-            {#if item.src}
-                {#if getMediaType(getExtension(item.src)) === "video"}
-                    <!-- video -->
-                    <video
-                        src={item.src}
-                        style="width: 100%;height: 100%;object-fit: {item.fit || 'contain'};filter: {item.filter};transform: scale({item.flipped ? '-1' : '1'}, {item.flippedY ? '-1' : '1'});"
-                        muted={mirror || item.muted}
-                        volume={Math.max(1, $volume)}
-                        autoplay
-                        loop
-                    >
-                        <track kind="captions" />
-                    </video>
-                {:else}
-                    <!-- WIP image flashes when loading new image (when changing slides with the same image) -->
-                    <!-- TODO: use custom transition... -->
-                    <Image src={item.src} alt="" style="width: 100%;height: 100%;object-fit: {item.fit || 'contain'};filter: {item.filter};transform: scale({item.flipped ? '-1' : '1'}, {item.flippedY ? '-1' : '1'});" />
-                    <!-- bind:loaded bind:hover bind:duration bind:videoElem {type} {path} {name} {filter} {flipped} -->
-                    <!-- <MediaLoader path={item.src} /> -->
-                {/if}
-            {/if}
-        {:else if item?.type === "camera"}
-            {#if item.device}
-                <Cam cam={item.device} item />
-            {/if}
-        {:else if item?.type === "timer"}
-            <!-- {#key item.timer} -->
-            <Timer {item} id={item.timerId || ""} {today} style={item.auto === false ? "" : `font-size: ${autoSize}px;`} />
-            <!-- {/key} -->
-        {:else if item?.type === "clock"}
-            <Clock {autoSize} style={false} {...item.clock} />
-        {:else if item?.type === "events"}
-            <DynamicEvents {...item.events} textSize={smallFontSize ? (-1.1 * $slidesOptions.columns + 12) * 5 : Number(getStyles(item.style, true)?.["font-size"]) || 80} />
-        {:else if item?.type === "variable"}
-            <Variable {item} style={item?.style?.includes("font-size") && item.style.split("font-size:")[1].trim()[0] !== "0" ? "" : `font-size: ${autoSize}px;`} />
-        {:else if item?.type === "mirror"}
-            <Mirror {item} {ref} {ratio} index={slideIndex} />
-        {:else if item?.type === "visualizer"}
-            <Visualizer {item} {preview} />
-        {:else if item?.type === "icon"}
-            {#if item.customSvg}
-                <div class="customIcon" class:customColor={item?.style.includes("color:") && !item?.style.includes("color:#FFFFFF;")}>
-                    {@html item.customSvg}
-                </div>
-            {:else}
-                <Icon style="zoom: {1 / ratio};" id={item.id || ""} fill white custom />
-            {/if}
-        {/if}
-    </div>
-{:else}
-    <!-- bind:offsetHeight={height} bind:offsetWidth={width} -->
-    <div
-        class="item"
-        style="{style ? getAlphaStyle(item?.style) : null};transition: filter 500ms, backdrop-filter 500ms;{filter ? 'filter: ' + filter + ';' : ''}{backdropFilter ? 'backdrop-filter: ' + backdropFilter + ';' : ''}{animationStyle.item || ''}"
-        class:white={key && !lines?.length}
-        class:key
-        class:addDefaultItemStyle
-        class:isDisabledVariable
-        class:hidden
-    >
-        {#if lines}
-            <div
-                class="align"
-                class:topBottomScrolling={item?.scrolling?.type === "top_bottom"}
-                class:bottomTopScrolling={item?.scrolling?.type === "bottom_top"}
-                class:leftRightScrolling={item?.scrolling?.type === "left_right"}
-                class:rightLeftScrolling={item?.scrolling?.type === "right_left"}
-                style={style ? item.align : null}
-                bind:this={alignElem}
-            >
-                <div
-                    class="lines"
-                    class:cacheText
-                    style="{style && lineGap ? `gap: ${lineGap}px;` : ''}{smallFontSize || customFontSize !== null ? '--font-size: ' + (smallFontSize ? (-1.1 * $slidesOptions.columns + 12) * 5 : customFontSize) + 'px;' : ''}{textAnimation}"
-                >
-                    {#each lines as line, i}
-                        {#if linesStart === null || linesEnd === null || (i >= linesStart && i < linesEnd)}
-                            {#if chords && chordLines[i]}
-                                <div
-                                    class:first={i === 0}
-                                    class="break chords"
-                                    class:stageChords={!!stageItem}
-                                    style="--chord-size: {stageItem?.chordsData?.size || item.chords?.size || 30}px;--chord-color: {stageItem?.chordsData?.color || item.chords?.color || '#FF851B'};"
-                                >
-                                    {@html chordLines[i]}
-                                </div>
-                            {/if}
-                            <!-- class:height={!line.text[0]?.value.length} -->
-                            <div class="break" class:smallFontSize={smallFontSize || customFontSize || textAnimation.includes("font-size")} style="{style && lineBg ? `background-color: ${lineBg};` : ''}{style ? line.align : ''}">
-                                {#each line.text || [] as text}
-                                    {@const value = text.value.replaceAll("\n", "<br>") || "<br>"}
-                                    <span style="{style ? getAlphaStyle(text.style) : ''}{fontSizeValue ? `font-size: ${fontSizeValue};` : ''}">
-                                        {@html value.includes("{") ? replaceDynamicValues(value, { showId: ref.showId, layoutId: ref.layoutId, slideIndex }) : value}
-                                    </span>
-                                {/each}
-                            </div>
-                        {/if}
-                    {/each}
-                </div>
-
-                {#if cacheText}
-                    {@html cachedLines}
-                {/if}
-            </div>
-        {:else if item?.type === "list"}
-            <ListView list={item.list} disableTransition={disableListTransition} />
-        {:else if item?.type === "media"}
-            {#if item.src}
-                {#if getMediaType(getExtension(item.src)) === "video"}
-                    <!-- video -->
-                    <video
-                        src={item.src}
-                        style="width: 100%;height: 100%;object-fit: {item.fit || 'contain'};filter: {item.filter};transform: scale({item.flipped ? '-1' : '1'}, {item.flippedY ? '-1' : '1'});"
-                        muted={mirror || item.muted}
-                        volume={Math.max(1, $volume)}
-                        autoplay
-                        loop
-                    >
-                        <track kind="captions" />
-                    </video>
-                {:else}
-                    <!-- WIP image flashes when loading new image (when changing slides with the same image) -->
-                    <Image transition={false} src={item.src} alt="" style="width: 100%;height: 100%;object-fit: {item.fit || 'contain'};filter: {item.filter};transform: scale({item.flipped ? '-1' : '1'}, {item.flippedY ? '-1' : '1'});" />
-                    <!-- bind:loaded bind:hover bind:duration bind:videoElem {type} {path} {name} {filter} {flipped} -->
-                    <!-- <MediaLoader path={item.src} /> -->
-                {/if}
-            {/if}
-        {:else if item?.type === "camera"}
-            {#if item.device}
-                <Cam cam={item.device} item />
-            {/if}
-        {:else if item?.type === "timer"}
-            <!-- {#key item.timer} -->
-            <Timer {item} id={item.timerId || ""} {today} style={item.auto === false ? "" : `font-size: ${autoSize}px;`} />
-            <!-- {/key} -->
-        {:else if item?.type === "clock"}
-            <Clock {autoSize} style={false} {...item.clock} />
-        {:else if item?.type === "events"}
-            <DynamicEvents {...item.events} textSize={smallFontSize ? (-1.1 * $slidesOptions.columns + 12) * 5 : Number(getStyles(item.style, true)?.["font-size"]) || 80} />
-        {:else if item?.type === "variable"}
-            <Variable {item} style={item?.style?.includes("font-size") && item.style.split("font-size:")[1].trim()[0] !== "0" ? "" : `font-size: ${autoSize}px;`} />
-        {:else if item?.type === "web"}
-            <Website src={item?.web?.src || ""} clickable={$currentWindow === "output"} />
-        {:else if item?.type === "mirror"}
-            <Mirror {item} {ref} {ratio} index={slideIndex} />
-        {:else if item?.type === "visualizer"}
-            <Visualizer {item} {preview} />
-        {:else if item?.type === "icon"}
-            {#if item.customSvg}
-                <div class="customIcon" class:customColor={item?.style.includes("color:") && !item?.style.includes("color:#FFFFFF;")}>
-                    {@html item.customSvg}
-                </div>
-            {:else}
-                <Icon style="zoom: {1 / ratio};" id={item.id || ""} fill white custom />
-            {/if}
-        {/if}
-    </div>
-{/if}
+<!-- lyrics view must have "width: 100%;height: 100%;" set -->
+<div
+    class="item"
+    style="{style ? getCustomStyle(item?.style, customOutputId, styleIdOverride, { $styles }) : 'width: 100%;height: 100%;'};{paddingCorrection}{foregroundFilters}{animationStyle.item || ''}{cssVariables}{fixedWidth}"
+    class:white={key && !lines?.length}
+    class:key
+    class:isStage
+    class:stageNoAuto={isStage && !stageAutoSize}
+    class:isDisabledVariable
+    class:noTransition
+    class:chords={chordLines.length}
+    class:clickable={$currentWindow === "output" && (item?.button?.press || item?.button?.release)}
+    class:reveal={(centerPreview || isStage) && item?.clickReveal && !clickRevealed}
+    class:hidden
+    bind:this={itemElem}
+    on:mousedown={press}
+    on:mouseup={release}
+>
+    {#if lines && !noTextMode}
+        <TextboxLines {item} {slideIndex} {key} {smallFontSize} {animationStyle} {dynamicValues} {isStage} {customFontSize} {outputStyle} {ref} {style} {customStyle} {stageItem} {chords} {linesStart} {linesEnd} fontSize={smallFontSize ? 20 : fontSize} {customTypeRatio} {maxLines} {maxLinesInvert} {centerPreview} {revealed} styleOverrides={templateStyleOverrides} {useOriginalTextColor} hideContent={hideUntilAutosized} {normalWrap} on:updateAutoSize={calculateAutosize} {updateDynamicValues} />
+    {:else}
+        <SlideItems {item} {slideIndex} {preview} {isTemplatePreview} {mirror} {isMirrorItem} {ratio} {disableListTransition} {smallFontSize} {ref} {fontSize} {outputId} />
+    {/if}
+</div>
 
 <style>
     .item {
         /* WIP this is for scrolling, but hides overflow text even on scroll */
         overflow: hidden;
-    }
 
-    .hidden {
-        opacity: 0;
-    }
+        /* click events */
+        pointer-events: initial;
 
-    /* .align .lines:nth-child(1) {
-        position: absolute;
-    } */
-    .cacheText {
-        opacity: 0;
-        position: absolute;
+        /* WIP custom time based on transition duration */
+        /* filter & dynamic CSS variable transition */
+        transition:
+            filter 500ms,
+            /* not supported */ backdrop-filter 500ms;
+        /* all 0.1s; */ /* with slide timeline items should not have a transition */
     }
-
-    .align {
+    .item.isStage {
+        width: 100%;
         height: 100%;
-        display: flex;
-        text-align: center;
-        align-items: center;
+    }
+    .item.stageNoAuto,
+    .item.stageNoAuto :global(.break),
+    .item.stageNoAuto :global(span.textContainer) {
+        font-size: unset;
     }
 
-    /* should match .edit in Editbox.svelte */
-    .lines {
-        /* overflow-wrap: break-word;
-  font-size: 0; */
-        width: 100%;
-
-        display: flex;
-        flex-direction: column;
-        text-align: center;
-        justify-content: center;
-
-        transition: var(--transition);
+    .item.reveal {
+        outline: 1px solid red;
+        opacity: 0.6;
     }
 
-    .break {
-        width: 100%;
-        /* line-height: normal; */
-
-        font-size: 0;
-        /* height: 100%; */
-
-        overflow-wrap: break-word;
-        /* line-break: after-white-space;
-    -webkit-line-break: after-white-space; */
+    .clickable {
+        cursor: pointer;
+    }
+    .clickable:active {
+        filter: brightness(0.8);
     }
 
-    .item :global(.wj) {
-        color: #ff5050;
+    .item.hidden {
+        visibility: hidden !important;
+        opacity: 0 !important;
     }
 
     .white {
@@ -600,132 +855,16 @@
         filter: grayscale(1);
     }
 
-    /* span {
-    display: inline;
-    white-space: initial;
-    color: white;
-  } */
-
-    .break:not(.stageChords) :global(span) {
-        font-size: 100px;
-        min-height: 50px;
-        /* display: inline-block; */
-
-        transition: var(--transition);
-    }
-    .break.smallFontSize :global(span) {
-        /* font-size: 30px; */
-        font-size: var(--font-size) !important;
-    }
-
     /* .height {
         height: 1em;
     } */
-
-    /* stage current slide */
-    .item.addDefaultItemStyle {
-        color: white;
-        font-size: 100px;
-        font-family: unset;
-        line-height: 1.1;
-        -webkit-text-stroke-color: #000000;
-        text-shadow: 2px 2px 10px #000000;
-
-        border-style: solid;
-        border-width: 0px;
-        border-color: #ffffff;
-
-        height: 150px;
-        width: 400px;
-    }
 
     .item.isDisabledVariable {
         display: none;
     }
 
-    /* scrolling */
-    /* WIP change time */
-    /* WIP scroll with overflow too */
-    .item .topBottomScrolling {
-        animation: topBottom 15s linear infinite normal;
-    }
-    .item .bottomTopScrolling {
-        animation: bottomTop 15s linear infinite normal;
-    }
-    .item .leftRightScrolling {
-        animation: leftRight 15s linear infinite normal;
-    }
-    .item .rightLeftScrolling {
-        animation: rightLeft 15s linear infinite normal;
-    }
-
-    @keyframes topBottom {
-        from {
-            transform: translateY(-100%);
-        }
-        to {
-            transform: translateY(100%);
-        }
-    }
-    @keyframes bottomTop {
-        from {
-            transform: translateY(100%);
-        }
-        to {
-            transform: translateY(-100%);
-        }
-    }
-    @keyframes leftRight {
-        from {
-            transform: translateX(-100%);
-        }
-        to {
-            transform: translateX(100%);
-        }
-    }
-    @keyframes rightLeft {
-        from {
-            transform: translateX(100%);
-        }
-        to {
-            transform: translateX(-100%);
-        }
-    }
-
-    /* chords */
-    .break.chords :global(.invisible) {
-        opacity: 0;
-        line-height: 0;
-        font-size: 100px;
-    }
-    .break.chords :global(.chord) {
-        position: absolute;
-        color: var(--chord-color);
-        font-size: var(--chord-size) !important;
-        bottom: -5px;
-        transform: translateX(-25%);
-        /* WIP chords goes over other (stage) items */
-        z-index: 2;
-    }
-    .break.chords {
-        line-height: 0.5em;
-        max-height: 15px;
-        position: relative;
-        pointer-events: none;
-    }
-    .break.chords.first {
-        line-height: var(--chord-size) !important;
-        /* max-height: unset; */
-    }
-
-    /* custom svg icon */
-
-    .customIcon,
-    .customIcon :global(svg) {
-        width: 100%;
-        height: 100%;
-    }
-    .customIcon.customColor :global(svg path) {
-        fill: currentColor;
+    .item.chords,
+    .item.chords :global(.align) {
+        overflow: visible;
     }
 </style>

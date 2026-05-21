@@ -1,57 +1,33 @@
 import { get } from "svelte/store"
 import { outputs, slideTimers } from "../../stores"
+import { playFolder } from "../../utils/shortcuts"
 import { clone } from "./array"
-import { nextSlide } from "./showActions"
+import { startFolderTimer } from "./output"
+import { OutputHelper } from "./OutputHelper"
 
-// let timers: any = {}
-// let activeTimers: string[] = []
-
-export function newSlideTimer(id: string, duration: number) {
+export function newSlideTimer(timerId: string, duration: number, folderPath = "") {
     if (duration <= 0) return
-    // timerMax = duration
 
-    console.log("CREATE SLIDE TIMER", duration)
-    console.log("CURRENT TIMERS", get(slideTimers))
-
-    // if (timers[id]) return timers[id]
-    // if (timers[id]) timers[id].stop()
-
-    // timer = { time: 0, paused: true }
-    if (get(slideTimers)[id]) {
-        get(slideTimers)[id]?.timer?.clear()
-        // delete timers[id]
+    if (get(slideTimers)[timerId]) {
+        get(slideTimers)[timerId]?.timer?.clear()
     }
 
     slideTimers.update((a) => {
-        a[id] = { time: 0, paused: true, sliderTimer: null, autoPlay: true, max: duration, timer: new Timer(timerEnded, duration * 1000, id) }
+        a[timerId] = { time: 0, paused: true, sliderTimer: null, autoPlay: true, max: duration, timer: new Timer(timerEnded, duration * 1000, timerId), data: folderPath }
         return a
     })
 
     setTimeout(() => {
-        get(slideTimers)[id]?.timer?.resume()
+        get(slideTimers)[timerId]?.timer?.resume()
     }, 10)
 
     function timerEnded(id: string) {
-        // if (timer.paused) {
-        //   timer = { time: 0, paused: true }
-        //   return
-        // }
-
-        // console.log(currentOutput.out?.slide?.index)
-        // outTransition.set(null)
-
-        // get and reset active element
-        let activeElem: any = document.activeElement
-        if (activeElem) {
-            setTimeout(() => {
-                activeElem.focus()
-            }, 10)
-        }
-
         if (!get(slideTimers)[id]) return
 
+        const data = get(slideTimers)[id].data || ""
+
         outputs.update((a) => {
-            if (a[id].out) a[id].out!.transition = null
+            if (a[id]?.out) a[id].out.transition = null
             return a
         })
 
@@ -60,43 +36,41 @@ export function newSlideTimer(id: string, duration: number) {
             return a
         })
 
-        console.log("DONE", clone(get(slideTimers)), id)
+        if (data) {
+            const isPDF = data.endsWith(".pdf")
+            if (isPDF) {
+                startFolderTimer(data, { type: "pdf", path: "" })
+                OutputHelper.advanceOutput(id, "", { playNext: true })
+            } else {
+                playFolder(data)
+            }
+            return
+        }
 
-        nextSlide(null, false, false, true, true, id)
-        // timer = { time: 0, paused: false }
+        OutputHelper.advanceOutput(id, "", { playNext: true })
     }
-
-    // return get(timers)[id]
 }
 
-// let timer = { time: 0, paused: true }
-// let timerMax: number = 0
-// let timeObj: any = null
-// let sliderTimer: any = null
-// let autoPlay: boolean = true
-const Timer: any = function (this: any, callback: any, delay: number, id: any) {
-    let timeout: any
+const Timer: any = function (this: any, callback: (id: string) => void, delay: number, timerId: string) {
+    let timeout: NodeJS.Timeout | null
     let start: number
     let remaining: number = delay
     let options: any = {}
 
-    // let options: any = get(timers)[id]
-    // options.time = options.max - remaining / 1000
-
     this.clear = () => {
-        clearTimeout(timeout)
+        if (timeout) clearTimeout(timeout)
         clearTimeout(options.sliderTimer)
         timeout = null
         options.sliderTimer = null
         slideTimers.update((a) => {
-            delete a[id]
+            delete a[timerId]
             return a
         })
     }
 
     this.pause = () => {
-        options = get(slideTimers)[id]
-        clearTimeout(timeout)
+        options = get(slideTimers)[timerId]
+        if (timeout) clearTimeout(timeout)
         clearTimeout(options.sliderTimer)
         timeout = null
         options.sliderTimer = null
@@ -109,25 +83,24 @@ const Timer: any = function (this: any, callback: any, delay: number, id: any) {
 
     this.resume = () => {
         if (timeout) return
-        options = get(slideTimers)[id]
+        options = get(slideTimers)[timerId]
         start = Date.now()
         remaining = (options.max - options.time) * 1000
         options.remaining = remaining
         options.autoPlay = true
         timeout = setTimeout(() => {
-            clearTimeout(timeout)
+            if (timeout) clearTimeout(timeout)
             timeout = null
-            callback(id)
+            callback(timerId)
         }, remaining)
         options.paused = false
-        sliderTime(id)
-        console.log(get(slideTimers)[id])
+        sliderTime(timerId)
         update()
     }
 
     function update() {
         slideTimers.update((a) => {
-            a[id] = { ...a, ...options, start }
+            a[timerId] = { ...options, start }
             return a
         })
     }
@@ -145,7 +118,9 @@ function sliderTime(id: any) {
         if (!options || !options.sliderTimer || !options.timer || options.paused) return
 
         slideTimers.update((a) => {
-            let remaining = options.remaining - (Date.now() - options.start)
+            if (!options.remaining || !options.start) return a
+
+            const remaining = options.remaining - (Date.now() - options.start)
             a[id].time = options.max - remaining / 1000
             a[id].time = Math.min(a[id].time, options.max)
 

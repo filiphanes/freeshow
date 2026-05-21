@@ -1,11 +1,25 @@
-<img align="right" width="150" height="150" src="https://github.com/vassbo/freeshow/assets/17619496/ddcdb667-db87-4844-b102-c928ac15f074">
+<p align='center'>
+ <a href='https://freeshow.app/'>
+  <img src='https://github.com/ChurchApps/FreeShow/assets/17619496/02ac9807-1f47-47fc-b895-b35f857c2b57' width=150 />
+ </a>
+</p>
 
-[![Downloads](https://img.shields.io/github/downloads/vassbo/freeshow/total)](https://github.com/vassbo/freeshow/releases)
-[![Licence](https://img.shields.io/badge/licence-GPL-blue.svg)](https://github.com/vassbo/freeshow/blob/main/LICENSE)
+<h1 align='center'>
+  FreeShow
+</h1>
 
-# FreeShow
+<p align='center'>
+  FreeShow is a free software with a user-friendly interface that offers powerful features for creating and editing slideshows. 
+</p>
 
-> FreeShow is a free software with a user-friendly interface that offers powerful features for creating and editing slideshows.
+<p align='center'>
+  <a href="https://github.com/ChurchApps/freeshow/releases"><img alt="Download" src="https://img.shields.io/github/downloads/ChurchApps/FreeShow/total?style=for-the-badge" /></a>
+  &nbsp;
+  <a href="https://github.com/ChurchApps/freeshow/blob/main/LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-GPL-blue.svg?style=for-the-badge" /></a>
+  &nbsp;
+  <a href="https://github.com/ChurchApps/FreeShow/"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/ChurchApps/FreeShow?style=for-the-badge" /></a>
+</p>
+<br />
 
 ## Get Started Using FreeShow
 
@@ -14,23 +28,39 @@
 ## Preview
 
 <div style="display: flex;gap: 10px;">
-    <img style="width: 49%;" src="https://github.com/vassbo/freeshow/assets/17619496/e74ed3c3-75ee-44a0-a3ee-1f8155c83220">
-    <img style="width: 49%;" src="https://github.com/vassbo/freeshow/assets/17619496/5b23c324-e21b-4a39-ad19-83bd91bb7b40">
+    <img style="width: 49%;" src="https://github.com/ChurchApps/FreeShow/assets/1447203/0e5e832d-9bb8-4c64-98cc-04f0ce3f966e">
+    <img style="width: 49%;" src="https://github.com/ChurchApps/FreeShow/assets/1447203/c1d71b2f-d873-4125-9f04-339e234e55f9">
 </div>
 <div style="display: flex;gap: 10px;margin-top: 10px;">
-    <img style="width: 49%;" src="https://github.com/vassbo/freeshow/assets/17619496/f6281d2a-fec9-41ae-baa3-cbdcced051ec">
-    <img style="width: 49%;" src="https://github.com/vassbo/freeshow/assets/17619496/9c315a85-6abb-4511-af94-3b276fff1f96">
+    <img style="width: 49%;" src="https://github.com/ChurchApps/FreeShow/assets/1447203/39c344fd-5c22-4019-9cae-c6307364d580">
+    <img style="width: 49%;" src="https://github.com/ChurchApps/FreeShow/assets/1447203/b1275bfc-e966-4813-962e-a7350ba6a84a">
 </div>
 
 ## Short description
 
 FreeShow is a free and open-source presentation program that makes it easy to show text on a big screen. It supports stage display, remote control, media, and many other advanced features. It is open-sourced meaning anyone can contribute.
 
-FreeShow exists because the creator found that other simular programs was either expensive or complex to use. He wanted to create a program that was easy to use and affordable for everyone, from small churches to large venues. FreeShow is now used by people all over the world.
+FreeShow exists because the creator found that other similar programs were either expensive or complex to use. He wanted to create a program that is easy to use and affordable for everyone, from small churches to large venues. FreeShow is now used by people all over the world.
 
-## Support us
+## Support Us
 
-The only reason this program is free is because of the generous support from users. If you want to support us to keep this free, please head over to [Live Church Solutions](https://livecs.org/partner). Thank you so much!
+The only reason this program is free is because of the generous support from users. If you want to support us to keep this free, please head over to [ChurchApps](https://churchapps.org/partner) or [sponsor us on GitHub](https://github.com/sponsors/ChurchApps/). Thank you so much!
+
+## Join the Community
+
+We have a great community for end-users on [Facebook](https://www.facebook.com/groups/freeshowapp). It's a good way to ask questions, get tips and follow new updates. Come join us!
+
+## Report an issue or request a feature
+
+If you notice a bug, or need a feature. Please create an [issue on GitHub](https://github.com/ChurchApps/freeshow/issues).
+
+## Give feedback
+
+Feedback is welcome! Please [open a discussion here](https://github.com/orgs/ChurchApps/discussions/categories/freeshow) or send a mail to [dev@freeshow.app](mailto:dev@freeshow.app).
+
+## Help translate
+
+Head over to [FreeShow on Transifex](https://app.transifex.com/nettbiter/freeshow/) to request a language.
 
 ## Help the development
 
@@ -38,19 +68,12 @@ You are welcome to contribute to the code!
 
 1. Clone the code in this repo
 2. Install [Node.js](https://nodejs.org/en/download/)
-3. In the terminal, run: `npm install`
-4. To start the app, run: `npm start`
+3. Install [Python 3.12](https://www.python.org/downloads/), and the [`setuptools`](https://pypi.org/project/setuptools/) package
+4. On Windows, download [Visual Studio](https://visualstudio.microsoft.com/downloads/) and install "Desktop development with C++", also select the "Windows 10 SDK"
+5. On Linux, install the following library: `sudo apt-get install libfontconfig1-dev`
+6. In the terminal, run: `npm install`
+7. To start the app, run: `npm start`
 
-## Report an issue or request a feature
+## Join us on Slack
 
-Create an [issue on GitHub](https://github.com/vassbo/freeshow/issues).
-
-## Give feedback
-
-Send a mail to [dev@freeshow.app](mailto:dev@freeshow.app).
-
-## Help translate
-
-Head over to [FreeShow on Transifex](https://app.transifex.com/nettbiter/freeshow/) to request a language.
-
-_Made in Norway by Kristoffer Vassbø_
+If you would like to get involved contributing in any way, head over to our [Slack Channel](https://join.slack.com/t/livechurchsolutions/shared_invite/zt-i88etpo5-ZZhYsQwQLVclW12DKtVflg) and introduce yourself. We'd love to hear from you.

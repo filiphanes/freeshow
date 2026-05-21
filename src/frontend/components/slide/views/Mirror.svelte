@@ -1,8 +1,11 @@
 <script lang="ts">
+    import { onDestroy } from "svelte"
     import { OUTPUT } from "../../../../types/Channels"
     import { currentWindow, outputs, showsCache, stageShows } from "../../../stores"
     import { send } from "../../../utils/request"
+    import { clone } from "../../helpers/array"
     import { loadShows } from "../../helpers/setShow"
+    import { getLayoutRef } from "../../helpers/show"
     import { _show } from "../../helpers/shows"
     import { getStyles } from "../../helpers/style"
     import Stagebox from "../../stage/Stagebox.svelte"
@@ -11,8 +14,8 @@
 
     export let item
     export let index: number
-    export let ratio: number = 1
-    export let edit: boolean = false
+    export let ratio = 1
+    export let edit = false
     export let ref: {
         type?: "show" | "stage" | "overlay" | "template"
         showId?: string
@@ -23,6 +26,8 @@
     $: stageEnabled = item.mirror?.enableStage
     $: nextSlide = item.mirror?.nextSlide
 
+    // WIP mirror item on last slide with "nextSlide" make all useless
+
     $: slideId = ref.slideId || ""
     function getMirroredItem(index: number, _updater: any = null) {
         if (!_updater && _updater !== null) return
@@ -31,7 +36,7 @@
         if (!nextSlide && showId === ref.showId) return
 
         let slideIndex = item.mirror.useSlideIndex !== false ? index : item.mirror.index || 0
-        let layoutRef = _show(showId).layouts("active").ref()[0] || {}
+        let layoutRef = getLayoutRef(showId)
 
         if (nextSlide) {
             slideIndex = index + 1
@@ -41,10 +46,15 @@
 
         let newSlideRef: any = layoutRef[slideIndex]
         if (!newSlideRef) return
-        slideId = newSlideRef.id
 
-        let newItem: any = _show(showId).slides([slideId]).items([0]).get()[0]?.[0]
+        slideId = newSlideRef.id
+        let slideItems = _show(showId).slides([slideId]).items().get()[0] || []
+
+        // has to be textbox item!
+        let newItem = slideItems.find((a) => (a.type || "text") === "text")
         if (!newItem) return
+
+        newItem = clone(newItem)
         newItem.style = "width: 100%;height: 100%;"
         if (!edit) newItem.style += "pointer-events: none;"
 
@@ -56,14 +66,19 @@
     $: currentRatio = itemStyle.width / itemStyle.height
 
     // request preview capture
+    let previewRequestInterval: any = null
     $: if ($currentWindow === "output" && stageEnabled && $stageShows[item.mirror?.stage]?.items?.["output#current_output"]?.enabled) {
         let id = Object.keys($outputs)[0]
         let previewId = $stageShows[item.mirror?.stage]?.settings?.output
 
-        setInterval(() => {
+        previewRequestInterval = setInterval(() => {
             send(OUTPUT, ["REQUEST_PREVIEW"], { id, previewId })
         }, 1000)
     }
+
+    onDestroy(() => {
+        if (previewRequestInterval) clearInterval(previewRequestInterval)
+    })
 </script>
 
 <Zoomed ratio={currentRatio} center style="height: 100%;" background="transparent" disableStyle showMirror>
@@ -72,7 +87,7 @@
             {#key item.mirror?.stage}
                 {#each Object.entries($stageShows[item.mirror?.stage]?.items || {}) as [id, stageItem]}
                     {#if stageItem.enabled}
-                        <Stagebox {id} show={$stageShows[item.mirror?.stage]} item={stageItem} {ratio} />
+                        <Stagebox {id} stageLayout={$stageShows[item.mirror?.stage]} item={clone(stageItem)} {ratio} />
                     {/if}
                 {/each}
             {/key}
@@ -83,7 +98,7 @@
                 {#if !$currentWindow}Loading...{/if}
             {:then}
                 {#if getMirroredItem(index, $showsCache[item.mirror?.show || ref.showId])}
-                    <Textbox item={getMirroredItem(index, $showsCache[item.mirror?.show || ref.showId])} ref={{ showId: item.mirror.show, slideId, id: ref.id }} />
+                    <Textbox isMirrorItem item={getMirroredItem(index, $showsCache[item.mirror?.show || ref.showId])} ref={{ showId: item.mirror.show, slideId, id: ref.id }} />
                 {/if}
             {/await}
         {/key}

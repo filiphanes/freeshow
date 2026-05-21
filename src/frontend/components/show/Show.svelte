@@ -1,71 +1,142 @@
 <script lang="ts">
-    import type { MediaStyle } from "../../../types/Main"
-    import { activeShow, dictionary, media, outLocked } from "../../stores"
-    import Image from "../drawer/media/Image.svelte"
+    import { activeProject, activeShow, outLocked, projects, resized, showsCache, special, templateApplied } from "../../stores"
+    import { DEFAULT_WIDTH } from "../../utils/common"
+    import Capture from "../drawer/live/Capture.svelte"
+    import NdiStream from "../drawer/live/NDIStream.svelte"
     import { createGlobalTimerFromLocalTimer } from "../drawer/timers/timers"
-    import { getMediaStyle } from "../helpers/media"
     import { setOutput } from "../helpers/output"
     import HoverButton from "../inputs/HoverButton.svelte"
     import Splash from "../main/Splash.svelte"
+    import Camera from "../output/Camera.svelte"
     import Layouts from "../slide/Layouts.svelte"
+    import Resizeable from "../system/Resizeable.svelte"
+    import Timeline from "../timeline/Timeline.svelte"
     import AudioPreview from "./AudioPreview.svelte"
+    import FolderShow from "./folder/FolderShow.svelte"
+    import MediaPreview from "./media/MediaPreview.svelte"
+    import OverlayPreview from "./overlay/OverlayPreview.svelte"
+    import PdfPreview from "./pdf/PdfPreview.svelte"
+    import ProjectShowPlaceholder from "./placeholder/ProjectShowPlaceholder.svelte"
+    import PowerPointPreview from "./ppt/PowerPointPreview.svelte"
     import Section from "./Section.svelte"
+    import ShowNotes from "./ShowNotes.svelte"
     import Slides from "./Slides.svelte"
-    import VideoShow from "./VideoShow.svelte"
 
     $: show = $activeShow
 
-    let mediaStyle: MediaStyle = {}
-    $: if (show) mediaStyle = getMediaStyle($media[show.id], { name: "" })
-
     // check for timer & create global
     $: if (show?.id) createGlobalTimerFromLocalTimer(show?.id)
+
+    $: position = $projects[$activeProject || ""]?.shows?.findIndex((a) => a.id === show?.id)
+
+    $: layoutId = show && (show.type || "show") === "show" ? $showsCache[show.id]?.settings?.activeLayout : null
 </script>
 
-<div class="main">
-    {#if show}
-        {#if show.type === "video" || show.type === "image" || show.type === "player"}
-            <div style="display: flex;flex-direction: column;height: 100%;">
-                {#if show.type === "video" || show.type === "player"}
-                    <VideoShow {show} {mediaStyle} />
-                {:else}
-                    <div class="media context #media_preview" style="flex: 1;overflow: hidden;">
-                        <HoverButton
-                            icon="play"
-                            size={10}
-                            on:click={() => {
-                                if (!$outLocked) setOutput("background", { path: show?.id, ...mediaStyle })
-                            }}
-                            title={$dictionary.media?.show}
-                        >
-                            <Image
-                                style="width: 100%;height: 100%;object-fit: {mediaStyle.fit || 'contain'};filter: {mediaStyle.filter || ''};transform: scale({mediaStyle.flipped ? '-1' : '1'}, {mediaStyle.flippedY ? '-1' : '1'});"
-                                src={show.id}
-                                alt={show.name || ""}
-                            />
-                        </HoverButton>
-                    </div>
-                {/if}
-            </div>
-        {:else if show.type === "audio"}
-            <AudioPreview />
-        {:else if show.type === "section"}
-            <Section section={show} />
+<div class="double">
+    <div id="showArea" class="main" class:highlight={$templateApplied}>
+        {#if show}
+            {#if show.type === "video" || show.type === "image" || show.type === "player"}
+                <MediaPreview />
+            {:else if show.type === "audio"}
+                <AudioPreview active={$activeShow} />
+            {:else if show.type === "section"}
+                {#key position !== undefined}
+                    <!-- update content when moving position in project -->
+                    <Section section={show} />
+                {/key}
+            {:else if show.type === "overlay"}
+                <OverlayPreview {show} />
+            {:else if show.type === "pdf"}
+                {#key show}
+                    <PdfPreview {show} index={show.index || 0} />
+                {/key}
+            {:else if show.type === "ppt"}
+                <!-- DEPRECATED -->
+                <PowerPointPreview {show} />
+            {:else if show.type === "camera"}
+                <HoverButton
+                    icon="play"
+                    size={10}
+                    on:click={() => {
+                        if (!$outLocked) setOutput("background", { id: show.id, type: show.type })
+                    }}
+                >
+                    <Camera id={show.id} groupId={show.data?.groupId} class="media" />
+                </HoverButton>
+            {:else if show.type === "screen"}
+                <HoverButton
+                    icon="play"
+                    size={10}
+                    on:click={() => {
+                        if (!$outLocked) setOutput("background", { id: show.id, type: show.type })
+                    }}
+                >
+                    <Capture screen={{ id: show.id, name: show.name || "" }} streams={[]} background />
+                </HoverButton>
+            {:else if show.type === "ndi"}
+                <HoverButton
+                    icon="play"
+                    size={10}
+                    on:click={() => {
+                        if (!$outLocked) setOutput("background", { id: show.id, type: show.type })
+                    }}
+                >
+                    <NdiStream screen={{ id: show.id, name: show.name || "" }} background />
+                </HoverButton>
+            {:else if show.type === "folder"}
+                {#key show.id}
+                    <FolderShow path={show.id} index={show.index || 0} />
+                {/key}
+            {:else if (show.type || "show") === "show"}
+                <Slides showId={$activeShow?.id || ""} />
+                <Layouts />
+            {:else if show.type === "show_placeholder"}
+                <ProjectShowPlaceholder />
+            {:else}
+                <p style="text-align: center;text-transform: capitalize;opacity: 0.8;">{show.type}</p>
+            {/if}
         {:else}
-            <Slides />
-            <Layouts />
+            <Splash />
         {/if}
-    {:else}
-        <Splash />
+    </div>
+
+    {#if show && (show.type || "show") === "show"}
+        <ShowNotes />
+
+        <!-- || $showsCache[show.id || ""]?.layouts[$showsCache[show.id || ""]?.settings?.activeLayout || ""]?.timeline?.actions?.length -->
+        {#if $special.timelineActive}
+            <Resizeable id="timeline" side="bottom" maxWidth={DEFAULT_WIDTH} minWidth={40}>
+                {#key $activeShow || layoutId}
+                    <!-- || !$special.timelineActive -->
+                    <Timeline type="show" isClosed={$resized.timeline <= 40} />
+                {/key}
+            </Resizeable>
+        {/if}
     {/if}
 </div>
 
 <style>
+    .double {
+        height: 100%;
+
+        display: flex;
+        flex-direction: column;
+
+        /* overflow: hidden; */
+    }
+
     .main {
         height: 100%;
         position: relative;
         display: flex;
         flex-direction: column;
         justify-content: center;
+
+        overflow: auto;
+    }
+
+    .main.highlight {
+        transition: border 0.1s ease;
+        border: 2px solid var(--secondary);
     }
 </style>

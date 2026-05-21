@@ -1,132 +1,75 @@
 <script lang="ts">
-    import Icon from "../helpers/Icon.svelte"
-    import Button from "../inputs/Button.svelte"
-    import { activePopup, os } from "../../stores"
-    import { scale, fade } from "svelte/transition"
+    import { fade, scale } from "svelte/transition"
+    import type { Popups } from "../../../types/Main"
+    import { activePopup, alertMessage, os, popupData, special } from "../../stores"
+    import { MENU_BAR_HEIGHT } from "../../utils/common"
+    import { popups } from "../../utils/popup"
+    import { disablePopupClose } from "../../utils/shortcuts"
     import T from "../helpers/T.svelte"
-    import DeleteShow from "./popups/DeleteShow.svelte"
-    import CreateShow from "./popups/CreateShow.svelte"
-    import ChangeIcon from "./popups/ChangeIcon.svelte"
-    import Rename from "./popups/Rename.svelte"
-    import About from "./popups/About.svelte"
-    import Unsaved from "./popups/Unsaved.svelte"
-    import Initialize from "./popups/Initialize.svelte"
-    import Shortcuts from "./popups/Shortcuts.svelte"
-    import Import from "./popups/Import.svelte"
-    import Export from "./popups/Export.svelte"
-    import Transition from "./popups/Transition.svelte"
-    import Alert from "./popups/Alert.svelte"
-    import ResetAll from "./popups/ResetAll.svelte"
-    import ImportScripture from "./popups/ImportScripture.svelte"
-    import Timer from "./popups/Timer.svelte"
-    import EditEvent from "./popups/EditEvent.svelte"
-    import Color from "./popups/Color.svelte"
-    import ChooseScreen from "./popups/ChooseScreen.svelte"
-    import AdvancedScreen from "./popups/AdvancedScreen.svelte"
-    import CreatePlayer from "./popups/CreatePlayer.svelte"
-    import History from "./popups/History.svelte"
-    import Midi from "./popups/Midi.svelte"
-    import CloudUpdate from "./popups/CloudUpdate.svelte"
-    import CloudMethod from "./popups/CloudMethod.svelte"
-    import ChangeOutputValues from "./popups/ChangeOutputValues.svelte"
-    import ChooseStyle from "./popups/ChooseStyle.svelte"
-    import SelectShow from "./popups/SelectShow.svelte"
-    import EditList from "./popups/EditList.svelte"
-    import Connect from "./popups/Connect.svelte"
-    import FindReplace from "./popups/FindReplace.svelte"
-    import NextTimer from "./popups/NextTimer.svelte"
-    import ManageIcons from "./popups/ManageIcons.svelte"
-    import ChooseCamera from "./popups/ChooseCamera.svelte"
-    import Animate from "./popups/Animate.svelte"
-    import SetTime from "./popups/SetTime.svelte"
-    import Variable from "./popups/Variable.svelte"
-    import Trigger from "./popups/Trigger.svelte"
-    import ManageColors from "./popups/ManageColors.svelte"
-    import AudioStream from "./popups/AudioStream.svelte"
-
-    const disableClose = ["initialize", "cloud_method"]
+    import MaterialButton from "../inputs/MaterialButton.svelte"
 
     function mousedown(e: any) {
-        if (disableClose.includes(popupId)) return
+        // same logic for Escape in shortcuts.ts
+        if (popupId && disablePopupClose.includes(popupId)) return
+        if (popupId === "alert" && $alertMessage === "actions.closing") return
 
         if (e.target.classList.contains("popup")) activePopup.set(null)
     }
 
-    const popups: any = {
-        initialize: Initialize,
-        import: Import,
-        export: Export,
-        show: CreateShow,
-        delete_show: DeleteShow,
-        select_show: SelectShow,
-        icon: ChangeIcon,
-        manage_icons: ManageIcons,
-        manage_colors: ManageColors,
-        choose_camera: ChooseCamera,
-        player: CreatePlayer,
-        rename: Rename,
-        color: Color,
-        find_replace: FindReplace,
-        edit_list: EditList,
-        timer: Timer,
-        variable: Variable,
-        trigger: Trigger,
-        audio_stream: AudioStream,
-        transition: Transition,
-        import_scripture: ImportScripture,
-        edit_event: EditEvent,
-        choose_screen: ChooseScreen,
-        change_output_values: ChangeOutputValues,
-        choose_style: ChooseStyle,
-        set_time: SetTime,
-        animate: Animate,
-        next_timer: NextTimer,
-        advanced_settings: AdvancedScreen,
-        about: About,
-        shortcuts: Shortcuts,
-        unsaved: Unsaved,
-        reset_all: ResetAll,
-        alert: Alert,
-        history: History,
-        midi: Midi,
-        connect: Connect,
-        cloud_update: CloudUpdate,
-        cloud_method: CloudMethod,
-    }
-
     // prevent svelte transition lock
-    let popupId: any = null
-    let popupTimeout: any = null
+    let popupId: Popups | null = null
+    let popupTimeout: NodeJS.Timeout | null = null
     $: if ($activePopup !== undefined) updatePopup()
     function updatePopup() {
         if (popupTimeout) return
 
+        popupId = $activePopup
         popupTimeout = setTimeout(() => {
-            popupId = $activePopup
             popupTimeout = null
-        }, 100)
+            if (popupId !== $activePopup) updatePopup()
+        }, 250)
     }
+
+    $: isWindows = $os.platform === "win32"
+
+    let scrolled = false
+    $: if (popupId === null) scrolled = false
+    function scroll(e) {
+        scrolled = e.target.scrollTop > 0
+    }
+
+    $: isOptimized = $special.optimizedMode
 </script>
 
 {#if popupId !== null}
     {#key popupId}
-        <div style={$os.platform === "win32" ? "height: calc(100% - 30px);" : null} class="popup" transition:fade={{ duration: 100 }} on:mousedown={mousedown}>
-            <div class="card" class:fill={popupId === "import_scripture"} transition:scale={{ duration: 200 }}>
-                <div style="position: relative;">
-                    {#if popupId !== "alert"}
-                        {#key popupId}
-                            <h2 style="text-align: center;padding: 10px 50px;"><T id="popup.{popupId}" /></h2>
-                        {/key}
-                    {/if}
+        <div style={isWindows ? `height: calc(100% - ${MENU_BAR_HEIGHT}px);` : null} class="popup" class:isOptimized transition:fade={{ duration: isOptimized ? 20 : 100 }} on:mousedown={mousedown}>
+            <!-- class:fill={popupId === "import_scripture"} -->
+            <div class="card" transition:scale={{ duration: isOptimized ? 50 : 200 }}>
+                {#if popupId !== "alert"}
+                    <div class="headerContent" style="border-bottom: 1px solid var(--primary-lighter);{scrolled ? 'box-shadow: 2px 2px 4px 5px rgb(0 0 0 / 0.1);' : ''}">
+                        <div class="headerMargin">
+                            {#key popupId}
+                                <!-- margin-top: -5px; -->
+                                <h2 style="font-size: 1.3em;margin-top: -2px;">
+                                    {#if popupId === "new_update"}
+                                        <T id="about.new_update" />: <span style="color: var(--secondary);">v{$popupData.latestVersion}</span>
+                                    {:else}
+                                        <T id="popup.{popupId}" />
+                                    {/if}
+                                </h2>
+                            {/key}
 
-                    {#if popupId !== "alert" && !disableClose.includes(popupId)}
-                        <Button style="position: absolute;right: 0;top: 0;height: 100%;min-height: 40px;" on:click={() => activePopup.set(null)}>
-                            <Icon id="close" size={2} />
-                        </Button>
-                    {/if}
-                </div>
-                <div style="display: flex;flex-direction: column;margin: 20px;min-width: 38vw;">
-                    <svelte:component this={popups[popupId]} />
+                            {#if !disablePopupClose.includes(popupId)}
+                                <MaterialButton class="popup-close" icon="close" iconSize={1.3} title="actions.close [esc]" on:click={() => activePopup.set(null)} />
+                            {/if}
+                        </div>
+                    </div>
+                {/if}
+                <div class="scroll" style="--top-height: {isWindows ? MENU_BAR_HEIGHT : 0}px;" on:scroll={scroll}>
+                    <div class="body">
+                        <svelte:component this={popups[popupId]} />
+                    </div>
                 </div>
             </div>
         </div>
@@ -140,12 +83,14 @@
 
     .popup {
         position: absolute;
-        background-color: rgb(0 0 0 / 0.8);
+        background-color: rgb(0 0 0 / 0.55);
         /* pointer-events: none; */
         width: 100%;
         height: 100%;
-        padding: 20px 300px;
+        padding: 20px var(--navigation-width);
         z-index: 5000;
+
+        backdrop-filter: blur(4px);
 
         font-size: 1.2em;
 
@@ -153,21 +98,79 @@
         align-items: center;
         justify-content: center;
     }
+    .popup.isOptimized {
+        background-color: rgb(0 0 0 / 0.8);
+    }
+
+    @media screen and (max-width: 1000px) {
+        .popup {
+            padding: 20px;
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            /* 12px for windows menu bar */
+            transform: translate(-50%, calc(-50% + 12px));
+        }
+    }
+
     .card {
         position: relative;
         background-color: var(--primary);
-        overflow-y: auto;
+
+        /* background-color: rgba(41, 44, 54, 0.8);
+        backdrop-filter: blur(4px); */
+
+        border-radius: 10px;
+
+        /* overflow-y: auto; */
+        /* overflow-x: hidden; */
 
         min-width: 50%;
         min-height: 50px;
         max-width: 100%;
         max-height: 100%;
+
+        border: 2px solid var(--primary-lighter);
+        box-shadow: 0 0 5px 5px rgb(0 0 0 / 0.2);
     }
 
-    .fill {
+    .headerContent {
+        position: relative;
+        display: flex;
+
+        z-index: 1;
+
+        transition: 0.2s box-shadow ease;
+
+        min-height: 56px;
+    }
+    .headerMargin {
+        margin: 10px 20px;
+        position: relative;
+        width: 100%;
+
+        display: flex;
+        align-items: center;
+    }
+
+    .scroll {
+        overflow: auto;
+        overflow-x: hidden;
+        /* 40px(popup margin) - 4px(popup border) - 35.2px(popup header) - 20px(body padding) - 25px(menubar) */
+        max-height: calc(100vh - 99.2px - var(--top-height));
+    }
+
+    .body {
+        display: flex;
+        flex-direction: column;
+        margin: 20px;
+        min-width: 38vw;
+    }
+
+    /* .fill {
         width: 100%;
         height: 100%;
-    }
+    } */
 
     /* WIP dropdown */
     /* .popup :global(.dropdown) {
@@ -175,4 +178,76 @@
         width: fit-content;
         max-height: 150px;
     } */
+
+    .card :global(.popup-close),
+    .card :global(.popup-back),
+    .card :global(.popup-options),
+    .card :global(.popup-reset) {
+        position: absolute;
+        inset-inline-end: -10px;
+        top: 0;
+        height: 100%;
+        padding: 0.4em !important;
+        border-radius: 4px;
+        aspect-ratio: 1;
+        justify-content: center;
+
+        z-index: 1;
+    }
+
+    .card :global(.popup-back) {
+        left: 0;
+
+        max-height: 35.2px;
+        margin-top: 10px;
+        margin-left: 10px;
+    }
+    .card:has(.popup-back) h2 {
+        margin-left: 35px;
+    }
+
+    .card :global(.popup-options) {
+        inset-inline-end: 42px;
+
+        max-height: 35.2px;
+        margin-top: 10px;
+        margin-right: 10px;
+
+        /* overflow: visible; */
+    }
+    .card :global(.popup-options.active) {
+        color: var(--secondary) !important;
+        background-color: var(--primary-darkest) !important;
+    }
+
+    .card :global(.popup-options .state) {
+        position: absolute;
+        bottom: 0; /* -1px; */
+        right: 0; /* -1px; */
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        background-color: var(--primary-darkest);
+        color: var(--text);
+        padding: 2px;
+        border-radius: 50%;
+
+        font-size: 0.65em;
+        opacity: 0.8;
+
+        width: 18px;
+        height: 18px;
+
+        pointer-events: none;
+    }
+
+    .card :global(.popup-reset) {
+        inset-inline-end: 85px;
+
+        max-height: 35.2px;
+        margin-top: 10px;
+        margin-right: 10px;
+    }
 </style>

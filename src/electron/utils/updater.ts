@@ -1,10 +1,18 @@
 // import { Notification, app } from "electron"
 import { autoUpdater } from "electron-updater"
+import { isProd } from ".."
 
 // let notification: Notification | null
 
-export default function checkForUpdates() {
-    autoUpdater.checkForUpdatesAndNotify()
+export default async function checkForUpdates() {
+    if (!isProd) return
+
+    try {
+        await autoUpdater.checkForUpdatesAndNotify()
+    } catch (err) {
+        console.error("Auto-update error:", err)
+    }
+
     // {
     //   title: app.getName(),
     //   body: "Downloading new update...",

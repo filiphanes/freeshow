@@ -11,13 +11,23 @@ declare module "*.svelte" {
 
 // declare properties TypeScript don't allow
 
+type FontData = {
+    family: string
+    fullName: string
+    postscriptName: string
+    style: string
+}
+
 // window.
 interface Window {
     api: {
-        send: (channel: string, data?: any) => void
+        send: (channel: string, data?: any, id?: string) => void
         receive: (channel: string, func: any, id?: string) => void
         removeListener: (channel: string, id: string) => void
+        getListeners: () => [string, number][]
+        showFilePath: (file: File) => string
     }
+    queryLocalFonts: () => Promise<FontData[]>
 }
 
 // event.target.
@@ -25,4 +35,14 @@ interface EventTarget {
     play?: any // VideoStream
     classList?: any
     closest?: any
+}
+
+declare module "*?worker&url" {
+    const url: string
+    export default url
+}
+
+declare module "*?url" {
+    const url: string
+    export default url
 }

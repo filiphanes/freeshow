@@ -1,27 +1,38 @@
 import { os, version, deviceId, isDev, activePage, activeDrawerTab } from "../stores"
 import { get } from "svelte/store"
 
-export async function trackEvent(eventName: string, params?: any) {
+const MEASUREMENT_ID = "G-CEE6P1QXG6"
+const API_SECRET = atob("YlVwZE42bXpRVjYyWDc2d0Z3OGMwZw==")
+const SESSION_ID = Date.now().toString()
+
+function trackEvent(eventName: string, params?: Record<string, any>) {
     if (get(isDev)) return
 
-    const sec = atob("YlVwZE42bXpRVjYyWDc2d0Z3OGMwZw==")
-    const measurementId = "G-CEE6P1QXG6"
-    const url = `https://www.google-analytics.com/mp/collect?api_secret=${sec}&measurement_id=${measurementId}`
-    let clientId = get(deviceId)
+    const clientId = get(deviceId)
+    if (!clientId) return
+
+    const eventParams = {
+        session_id: SESSION_ID,
+        app_version: get(version),
+        engagement_time_msec: 1,
+        ...params
+    }
 
     const payload = {
         client_id: clientId,
-        events: [{ name: eventName, params: params || {} }],
+        events: [{ name: eventName, params: eventParams }]
     }
 
-    fetch(url, {
+    fetch(`https://www.google-analytics.com/mp/collect?api_secret=${API_SECRET}&measurement_id=${MEASUREMENT_ID}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payload)
     })
 }
 
 export function startTracking() {
+    trackFirstOpenIfNeeded()
+    trackEvent("session_start")
     trackAppLaunch()
 
     // listeners
@@ -29,14 +40,30 @@ export function startTracking() {
     activeDrawerTab.subscribe(trackDrawerView)
 }
 
+function trackFirstOpenIfNeeded() {
+    const key = "freeshow_first_open_sent"
+    if (!localStorage.getItem(key)) {
+        trackEvent("first_open")
+        localStorage.setItem(key, "1")
+    }
+}
+
 function trackAppLaunch() {
-    trackEvent("application_start", { app_version: get(version), platform: get(os).platform })
+    trackEvent("application_start", { platform: get(os).platform })
 }
 
 function trackPageView(title: string) {
-    trackEvent("page_view", { page_location: "https://freeshow.app/_app/" + title, page_title: title, engagement_time_msec: 1 })
+    trackEvent("page_view", { page_location: "https://freeshow.app/_app/" + title, page_title: title })
 }
 
 function trackDrawerView(title: string) {
-    trackEvent("drawer_view", { drawer_location: "https://freeshow.app/_app/" + title, drawer_title: title, engagement_time_msec: 1 })
+    trackEvent("drawer_view", { drawer_location: "https://freeshow.app/_app/" + title, drawer_title: title })
+}
+
+const previouslyTracked: { [key: string]: string } = {}
+export function trackScriptureUsage(translationName: string, apiId: string | null, verseRef: string) {
+    if (previouslyTracked[translationName] === verseRef) return
+    previouslyTracked[translationName] = verseRef
+
+    trackEvent("scripture_usage", { translation_name: translationName, api_id: apiId, verse_ref: verseRef })
 }

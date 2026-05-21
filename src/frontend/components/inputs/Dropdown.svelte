@@ -1,45 +1,46 @@
 <script lang="ts">
-    import { slide } from "svelte/transition"
     import { createEventDispatcher } from "svelte"
-    import { translate } from "../../utils/language"
-    import { language } from "../../stores"
+    import { slide } from "svelte/transition"
     import type { Option } from "../../../types/Main"
+    import { language } from "../../stores"
+    import { triggerClickOnEnterSpace } from "../../utils/clickable"
+    import { translateText } from "../../utils/language"
     import Icon from "../helpers/Icon.svelte"
 
     const dispatch = createEventDispatcher()
     export let options: Option[]
-    export let id: string = ""
-    export let disabled: boolean = false
-    export let center: boolean = false
-    export let arrow: boolean = false
-    let active: boolean = false
-    export let value: any
-    export let title: string = ""
+    export let id = ""
+    export let disabled = false
+    export let center = false
+    export let arrow = false
+    let active = false
+    export let value: string
+    export let activeId = ""
+    export let title = ""
+    export let flags = false
+    export let up = false
     let normalizedValue: any = value
-    $: (normalizedValue = value || options[0]?.name || "—"), $language
-    // TODO: disable active on click anywhere
+    $: ((normalizedValue = value || options[0]?.name || "—"), $language)
 
     let self: HTMLDivElement
 
-    let nextScrollTimeout: any = null
+    let nextScrollTimeout: NodeJS.Timeout | null = null
     function wheel(e: any) {
-        if (disabled || nextScrollTimeout) return
-        // if (!e.ctrlKey && !e.metaKey) return
+        const ctrl = e.ctrlKey || e.metaKey
+        if (disabled || arrow || nextScrollTimeout || !ctrl) return
         e.preventDefault()
 
-        let index = options.findIndex((a) => a.name === (value.name || value))
+        let index = options.findIndex((a) => (activeId ? a.id === activeId : a.name === value))
         if (e.deltaY > 0) index = Math.min(options.length - 1, index + 1)
         else index = Math.max(0, index - 1)
         dispatch("click", options[index])
 
         // don't start timeout if scrolling with mouse
-        if (e.deltaY > 100 || e.deltaY < -100) return
+        if (e.deltaY >= 100 || e.deltaY <= -100) return
         nextScrollTimeout = setTimeout(() => {
             nextScrollTimeout = null
         }, 500)
     }
-
-    // TODO: scroll don't work with multiple of the same name (e.g. EditTimer.svelte)
 
     $: if (active) scrollToActive()
     function scrollToActive() {
@@ -47,7 +48,8 @@
         if (!id) return
 
         setTimeout(() => {
-            if (!self) return
+            // dropdown does not have a scroll bar if not much content, return so parent is not scrolled!
+            if (!self || options.length < 10) return
             let activeElem = self.querySelector("#" + id)
             activeElem?.scrollIntoView()
         }, 10)
@@ -56,51 +58,75 @@
     function formatId(value: string) {
         return "id_" + value?.replace(/[\W_]+/g, "")
     }
-</script>
 
-<svelte:window
-    on:mousedown={(e) => {
+    function mousedown(e: any) {
         if (e.target?.closest(".dropdownElem") !== self && active) {
             active = false
         }
-    }}
-/>
+    }
+</script>
 
-<div class:disabled class:center bind:this={self} class="dropdownElem" style="position: relative;{$$props.style || ''}">
-    <button {id} {title} on:click={() => (disabled ? null : (active = !active))} on:wheel={wheel}>
+<svelte:window on:mousedown={mousedown} />
+
+<div class:disabled class:center class:flags bind:this={self} class="dropdownElem {$$props.class || ''}" style="position: relative;{$$props.style || ''}">
+    <button style={arrow ? "justify-content: center;" : ""} {id} data-title={title} on:click={() => (disabled ? null : (active = !active))} on:wheel={wheel}>
         {#if arrow}
             <Icon id="expand" size={1.2} white />
         {:else}
-            {translate(normalizedValue, { parts: true }) || value}
-            <!-- <T id={value} /> -->
+            {translateText(normalizedValue) || value}
         {/if}
     </button>
     {#if active}
-        <div class="dropdown" class:arrow style={$$props.style || ""} transition:slide={{ duration: 200 }}>
+        <div class="dropdown" class:up class:arrow style={$$props.style || ""} transition:slide={{ duration: 200 }}>
             {#each options as option}
-                <!-- {#if option.name !== value} -->
                 <span
                     id={formatId(option.name)}
+                    style={option.style || ""}
+                    role="option"
+                    aria-selected={activeId ? option.id === activeId : option.name === value}
+                    tabindex="0"
                     on:click={() => {
                         if (disabled) return
-                        dispatch("click", option)
                         active = false
+                        // allow dropdown to close before updating, so svelte visual bug don't duplicate inputs on close transition in boxstyle edit etc.
+                        setTimeout(() => {
+                            dispatch("click", option)
+                        }, 50)
                     }}
-                    class:active={option.name === value}
+                    on:keydown={triggerClickOnEnterSpace}
+                    class:active={activeId && option?.id ? option.id === activeId : option.name === value}
                 >
-                    {translate(option.name, { parts: true }) || option.name}
+                    {translateText(option.name) || option.name}
                     {#if option.extra}
                         ({option.extra})
                     {/if}
-                    <!-- <T id={option.name} /> -->
+
+                    {#if option.extraInfo}
+                        <div class="extra">
+                            {option.extraInfo}
+                        </div>
+                    {/if}
                 </span>
-                <!-- {/if} -->
             {/each}
         </div>
     {/if}
 </div>
 
 <style>
+    .dropdownElem.flags {
+        font-family:
+            "NotoColorEmojiLimited",
+            -apple-system,
+            BlinkMacSystemFont,
+            "Segoe UI",
+            Roboto,
+            Oxygen-Sans,
+            Ubuntu,
+            Cantarell,
+            "Helvetica Neue",
+            sans-serif !important;
+    }
+
     div {
         /* width: fit-content;
     min-width: 200px; */
@@ -127,8 +153,15 @@
         z-index: 10;
     }
 
+    .dropdown.up {
+        top: 0;
+        left: 0;
+        position: absolute;
+        transform: translateY(-100%);
+    }
+
     .dropdown.arrow {
-        right: 0;
+        inset-inline-end: 0;
         width: 300px;
     }
 
@@ -153,6 +186,8 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+
+        position: relative;
     }
 
     button {
@@ -160,7 +195,7 @@
         color: var(--text);
         border: 2px solid var(--primary-lighter);
         /* font-weight: bold; */
-        text-align: left;
+        text-align: start;
 
         display: flex;
         align-items: center;
@@ -173,5 +208,23 @@
     span.active {
         background-color: var(--focus);
         color: var(--secondary);
+    }
+
+    .dropdown .extra {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+
+        display: flex;
+        justify-content: end;
+        align-items: center;
+        padding: 0 10px;
+
+        font-size: 0.8em;
+        background-color: transparent;
+        opacity: 0.5;
+
+        pointer-events: none;
     }
 </style>

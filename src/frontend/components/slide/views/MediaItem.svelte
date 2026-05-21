@@ -1,0 +1,183 @@
+<script lang="ts">
+    import { onDestroy, onMount } from "svelte"
+    import { uid } from "uid"
+    import { OUTPUT } from "../../../../types/Channels"
+    import type { Item } from "../../../../types/Show"
+    import { AudioPlayer } from "../../../audio/audioPlayer"
+    import { currentWindow, outputs, slideVideoData, styles, volume } from "../../../stores"
+    import { destroy, receive, send } from "../../../utils/request"
+    import Image from "../../drawer/media/Image.svelte"
+    import { encodeFilePath, getExtension, getMedia, getMediaType, getThumbnailPath, mediaSize } from "../../helpers/media"
+    import { defaultLayers } from "../../helpers/output"
+    import { _show } from "../../helpers/shows"
+    import { getCropState } from "../../helpers/cropping"
+
+    export let id: string
+    export let item: Item
+    export let outputId = ""
+    export let slideRef: any = {}
+
+    export let preview = false
+    export let mirror = true
+    export let edit = false
+    export let cropPreviewMode = false
+
+    // replace any media items (with unset path) to the set slide background -- if the background layer is turned off
+    function getCustomPath() {
+        if (!outputId || !slideRef.showId) return
+
+        const outputStyle = $styles[$outputs[outputId]?.style || ""]
+        const layers = Array.isArray(outputStyle?.layers) ? outputStyle.layers : defaultLayers
+        if (layers.includes("background")) return
+
+        const layoutRef = _show(slideRef.showId).layouts([slideRef.layoutId]).ref()[0] || []
+        const layoutSlide = layoutRef[slideRef.slideIndex]
+        let backgroundId = layoutSlide?.data?.background || ""
+        if (!backgroundId) {
+            // get from first slide if not on current slide
+            backgroundId = layoutRef[0]?.data?.background || ""
+        }
+
+        const media = _show(slideRef.showId).get()?.media || {}
+
+        mediaPath = media[backgroundId]?.path || ""
+    }
+
+    $: shouldAutoUpdate = typeof item.src === "string" && item.src.includes("NowPlayingCover")
+
+    let updater = 0
+    let updateInterval: NodeJS.Timeout | null = null
+    $: if (shouldAutoUpdate && !updateInterval) {
+        updateInterval = setInterval(() => (updater = Date.now()), 1000)
+    }
+    onDestroy(() => {
+        if (updateInterval) clearInterval(updateInterval)
+    })
+
+    // LOAD MEDIA ITEM
+
+    let mediaPath = ""
+
+    $: bgPath = item?.src
+    $: if (bgPath) loadMedia()
+    async function loadMedia() {
+        if (item.type !== "media") return
+
+        if (typeof bgPath !== "string") return getCustomPath()
+
+        mediaPath = bgPath
+        let thumbnailPath = getThumbnailPath(mediaPath, mediaSize.slideSize)
+
+        const media = await getMedia(bgPath, mediaSize.slideSize)
+        if (!media) return
+
+        mediaPath = media.path
+        thumbnailPath = media.thumbnail
+
+        // only load thumbnails in main preview
+        if (shouldAutoUpdate || $currentWindow || preview) return
+
+        mediaPath = thumbnailPath
+    }
+
+    $: cropState = getCropState(item?.cropping, cropPreviewMode)
+    $: showCropOverflowPreview = cropState.showCropOverflowPreview
+    $: mediaCropGeometry = cropState.mediaCropGeometry
+    $: flipX = item?.flipped ? -1 : 1
+    $: flipY = item?.flippedY ? -1 : 1
+    $: transformString = `scale(${flipX}, ${flipY})`
+
+    $: mediaStyleString = `filter: ${item?.filter};object-fit: ${item?.fit === "blur" ? "contain" : item?.fit || "contain"};`
+    $: mediaStyleBlurString = `position: absolute;filter: ${item?.filter || ""} blur(6px) opacity(0.3);object-fit: cover;`
+    $: mediaStyleCombinedString = `${mediaCropGeometry}transform-origin: center;transform: ${transformString};${edit ? "pointer-events: none;" : ""}`
+    $: mediaOverflowPreviewStyle = `position: absolute;width: 100%;height: 100%;left: 0;top: 0;opacity: 0.35;pointer-events: none;transform-origin: center;transform: ${transformString};`
+
+    // VIDEO UPDATE
+
+    let videoElem: HTMLVideoElement | null = null
+    let videoBlurElem: HTMLVideoElement | null = null
+
+    $: if (!$currentWindow && $slideVideoData) updateVideo()
+    function updateVideo() {
+        if (!bgPath) return
+
+        const videoData = $slideVideoData[id]?.[bgPath]
+        if (!videoElem || !videoData) return
+
+        if (videoData.isPaused && !videoElem.paused) {
+            videoElem.pause()
+            videoBlurElem?.pause()
+        } else if (!videoData.isPaused && videoElem.paused) {
+            videoElem.play()
+            videoBlurElem?.play()
+        }
+    }
+
+    onMount(() => {
+        if ($currentWindow !== "output") return
+
+        const interval = setInterval(() => {
+            if (!videoElem) return
+
+            const videoData = { currentTime: videoElem.currentTime, duration: videoElem.duration, isPaused: videoElem.paused, loop: videoElem.loop }
+            // send(Main.MAIN_SLIDE_VIDEO, videoData)
+            send(OUTPUT, ["MAIN_SLIDE_VIDEO"], { id, path: bgPath, data: videoData })
+        }, 200)
+
+        const videoReceiver = {
+            SLIDE_VIDEO_STATE: (data: any) => {
+                if (data.slideId !== id || data.path !== bgPath) return
+                if (!videoElem) return
+
+                if (data.action === "play") {
+                    videoElem.play()
+                    videoBlurElem?.play()
+                } else if (data.action === "pause") {
+                    videoElem.pause()
+                    videoBlurElem?.pause()
+                } else if (data.action === "loop") {
+                    videoElem.loop = true
+                    if (videoBlurElem) videoBlurElem.loop = true
+                } else if (data.action === "unloop") {
+                    videoElem.loop = false
+                    if (videoBlurElem) videoBlurElem.loop = false
+                }
+            }
+        }
+
+        const listenerId = "SLIDE_VIDEO_RECEIVE_" + uid(5)
+        receive(OUTPUT, videoReceiver, listenerId)
+
+        return () => {
+            clearInterval(interval)
+            destroy(OUTPUT, listenerId)
+        }
+    })
+
+    $: playbackRate = item.speed ?? 1
+
+    let shouldLoop = item.loop !== false
+</script>
+
+{#if mediaPath}
+    {#if ($currentWindow || preview) && getMediaType(getExtension(mediaPath)) === "video"}
+        {#if item.fit === "blur"}
+            <video bind:this={videoBlurElem} src={encodeFilePath(mediaPath)} style="{mediaStyleBlurString}{mediaStyleCombinedString}" bind:playbackRate muted autoplay loop={shouldLoop} />
+        {/if}
+        <video bind:this={videoElem} src={encodeFilePath(mediaPath)} style="{mediaStyleString}{mediaStyleCombinedString}" bind:playbackRate muted={mirror || item.muted} volume={AudioPlayer.getVolume(null, $volume)} autoplay loop={shouldLoop}>
+            <track kind="captions" />
+        </video>
+    {:else}
+        <!-- {#key updater} -->
+        <!-- WIP image flashes when loading new image (when changing slides with the same image) -->
+        <!-- TODO: use custom transition... -->
+        {#if showCropOverflowPreview}
+            <Image style="{mediaStyleString}{mediaOverflowPreviewStyle}" src={mediaPath} {updater} alt="" transition={false} />
+        {/if}
+        {#if item.fit === "blur"}
+            <Image style="{mediaStyleBlurString}{mediaStyleCombinedString}" src={mediaPath} {updater} alt="" transition={!edit && item.actions?.transition?.duration && item.actions?.transition?.type !== "none"} />
+        {/if}
+        <Image style="{mediaStyleString}{mediaStyleCombinedString}" src={mediaPath} {updater} alt="" transition={!edit && item.actions?.transition?.duration && item.actions?.transition?.type !== "none"} />
+        <!-- {/key} -->
+    {/if}
+{/if}

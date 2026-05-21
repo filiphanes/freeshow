@@ -1,75 +1,116 @@
 <script lang="ts">
     import { onMount } from "svelte"
-    import { activePopup, activeShow, outputs, overlays, selected, showsCache, templates } from "../../../stores"
+    import { activePopup, activeProject, activeShow, editingProjectTemplate, effects, globalTags, outputs, overlays, profiles, projects, projectTemplates, selected, showsCache, templates } from "../../../stores"
     import { history } from "../../helpers/history"
-    import Icon from "../../helpers/Icon.svelte"
+    import { getLayoutRef } from "../../helpers/show"
     import { _show } from "../../helpers/shows"
-    import Button from "../../inputs/Button.svelte"
-    import Color from "../../inputs/Color.svelte"
-    import T from "../../helpers/T.svelte"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
+    import MaterialColorInput from "../../inputs/MaterialColorInput.svelte"
 
-    let value: any = "#FFFFFF"
-    $: console.log(value)
+    let value = "#FFFFFF"
+    let allowEmpty = $selected.id === "show" // || $selected.id === "slide"
+
+    const selection = $selected
+
     onMount(() => {
-        if ($selected.id === "slide") {
-            let firstSelected = $selected.data[0]
-            let ref = _show("active").layouts("active").ref()[0][firstSelected.index]
+        if (selection.id === "slide") {
+            let firstSelected = selection.data[0]
+            let ref: any = getLayoutRef()[firstSelected.index]
+            if (!ref) return
+
             if (ref.type === "child") ref = ref.parent
-            value = _show("active").slides([ref.id]).get("color")
-        } else if ($selected.id === "group") {
-            value = _show("active").slides([$selected.data[0].id]).get("color")
-        } else if ($selected.id === "overlay") value = $overlays[$selected.data[0]].color
-        else if ($selected.id === "template") value = $templates[$selected.data[0]].color
-        else if ($selected.id === "output") value = $outputs[$selected.data[0].id].color
+            value = _show().slides([ref.id]).get("color")[0] || ""
+        } else if (selection.id === "group") {
+            value = _show().slides([selection.data[0].id]).get("color")[0] || ""
+        } else if (selection.id === "overlay") value = $overlays[selection.data[0]]?.color || ""
+        else if (selection.id === "template") value = $templates[selection.data[0]]?.color || ""
+        else if (selection.id === "effect") value = $effects[selection.data[0]]?.color || ""
+        else if (selection.id === "output") value = $outputs[selection.data[0]?.id]?.color || ""
+        else if (selection.id === "profile") value = $profiles[selection.data[0]?.id]?.color || ""
+        else if (selection.id === "tag") value = $globalTags[selection.data[0]?.id]?.color || ""
+        else if (selection.id === "show") value = ($editingProjectTemplate ? $projectTemplates[$editingProjectTemplate] : $projects[$activeProject || ""])?.shows?.[selection.data[0]?.index]?.color || ""
     })
 
-    const actions: any = {
+    const actions = {
         slide: () => {
-            $selected.data.forEach((a) => {
-                let ref = a.id ? { id: a.id } : _show("active").layouts("active").ref()[0][a.index]
+            selection.data.forEach((a) => {
+                let ref: any = a.id ? { id: a.id } : getLayoutRef()[a.index]
+                if (!ref) return
+
                 if (ref.type === "child") ref = ref.parent
-                console.log(ref)
 
                 // remove global group if active
-                if ($activeShow && $showsCache[$activeShow.id].slides[ref.id].globalGroup)
-                    history({ id: "UPDATE", newData: { data: null, key: "slides", keys: [ref.id], subkey: "globalGroup" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key" } })
+                if ($activeShow && $showsCache[$activeShow.id].slides[ref.id].globalGroup) history({ id: "UPDATE", newData: { data: null, key: "slides", keys: [ref.id], subkey: "globalGroup" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key" } })
 
-                history({ id: "UPDATE", newData: { data: value, key: "slides", keys: [ref.id], subkey: "color" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key" } })
+                history({ id: "UPDATE", newData: { data: value, key: "slides", keys: [ref.id], subkey: "color" }, oldData: { id: $activeShow?.id }, location: { page: "show", id: "show_key", override: "color" } })
             })
         },
         group: () => actions.slide(),
         overlay: () => {
-            $selected.data.forEach((id) => {
-                history({ id: "UPDATE", newData: { key: "color", data: value }, oldData: { id }, location: { page: "drawer", id: "overlay_color" } })
+            selection.data.forEach((id) => {
+                history({ id: "UPDATE", newData: { key: "color", data: value }, oldData: { id }, location: { page: "drawer", id: "overlay_color", override: "color" } })
             })
         },
         template: () => {
-            $selected.data.forEach((id) => {
-                history({ id: "UPDATE", newData: { key: "color", data: value }, oldData: { id }, location: { page: "drawer", id: "template_color" } })
+            selection.data.forEach((id) => {
+                history({ id: "UPDATE", newData: { key: "color", data: value }, oldData: { id }, location: { page: "drawer", id: "template_color", override: "color" } })
+            })
+        },
+        effect: () => {
+            selection.data.forEach((id) => {
+                history({ id: "UPDATE", newData: { key: "color", data: value }, oldData: { id }, location: { page: "drawer", id: "effect_key", override: "color" } })
             })
         },
         output: () => {
             outputs.update((a) => {
-                $selected.data.forEach(({ id }) => {
+                selection.data.forEach(({ id }) => {
                     a[id].color = value
                 })
 
                 return a
             })
         },
+        profile: () => {
+            profiles.update((a) => {
+                selection.data.forEach(({ id }) => {
+                    if (!a[id]) return
+                    a[id].color = value
+                })
+
+                return a
+            })
+        },
+        tag: () => {
+            globalTags.update((a) => {
+                let id = selection.data[0]?.id || ""
+                if (a[id]) a[id].color = value
+
+                return a
+            })
+        },
+        show: () => {
+            const projectId = $editingProjectTemplate ? $editingProjectTemplate : $activeProject || ""
+
+            ;($editingProjectTemplate ? projectTemplates : projects).update((a) => {
+                if (!a[projectId]) return a
+
+                selection.data.forEach(({ index }) => {
+                    if (!a[projectId]?.shows?.[index]) return
+                    a[projectId].shows[index].color = value
+                })
+
+                a[projectId].modified = Date.now()
+                return a
+            })
+        }
     }
 
-    function updateColor() {
-        if ($selected.id) actions[$selected.id]()
-        activePopup.set(null)
+    function update(e) {
+        value = e.detail
+        if (selection.id && actions[selection.id]) actions[selection.id]()
     }
 </script>
 
-<Color {value} on:input={(e) => (value = e.detail)} visible />
+<MaterialButton class="popup-options" icon="edit" iconSize={1.1} title="create_show.more_options" on:click={() => activePopup.set("manage_colors")} white />
 
-<br />
-
-<Button on:click={updateColor} dark center>
-    <Icon id="save" size={1.2} right />
-    <T id="actions.save" />
-</Button>
+<MaterialColorInput label="" {value} on:input={update} {allowEmpty} alwaysVisible />

@@ -1,33 +1,58 @@
 <script lang="ts">
     import { onMount } from "svelte"
-    import { draw, drawSettings, outputs, paintCache, styles } from "../../stores"
-    import { getActiveOutputs, getResolution } from "../helpers/output"
-    import { _show } from "../helpers/shows"
+    import type { Draw, DrawLine } from "../../../types/Draw"
+    import { draw, drawSettings, outputs, paintCache, paintCacheSlide } from "../../stores"
+    import { clone } from "../helpers/array"
+    import { getFirstActiveOutput, getOutputResolution } from "../helpers/output"
 
-    export let settings: any = {}
+    export let settings: { [key: string]: any } = {}
 
-    $: currentOutput = $outputs[getActiveOutputs()[0]]
-    $: currentLayout = currentOutput.out?.slide ? _show(currentOutput.out.slide.id).layouts([currentOutput.out.slide.layout]).ref()[0] : []
-    $: currentSlide = currentOutput.out?.slide ? (currentOutput.out.slide.id === "temp" ? { items: currentOutput.out.slide.tempItems } : _show(currentOutput.out.slide.id).slides([currentLayout![currentOutput.out.slide.index!].id]).get()[0]) : null
-    $: resolution = getResolution(currentSlide?.settings?.resolution, { $outputs, $styles })
+    let canvas: HTMLCanvasElement | null = null
+    let ctx: CanvasRenderingContext2D | null = null
 
-    let canvas: any = null
-    let ctx: any = null
+    let lines: DrawLine[] = []
 
-    let lines: any[] = []
+    // WIP only works when output resolution ratio is the same as the style ratio
+    $: outputId = getFirstActiveOutput($outputs)?.id || ""
+    $: resolution = getOutputResolution(outputId, $outputs)
 
+    $: outSlide = $outputs[outputId]?.out?.slide
+    $: outSlideId = (outSlide?.id || "") + (outSlide?.index || 0) + (outSlide?.layout || "")
+    let previousOutSlideId = ""
+    $: linkToSlide = settings.link_to_slide
+    $: if (linkToSlide && outSlideId !== undefined) updateDrawing()
+    function updateDrawing() {
+        if (!mounted) return
+
+        paintCacheSlide.update((a) => {
+            a[previousOutSlideId] = clone(lines)
+            return a
+        })
+
+        paintCache.set(clone($paintCacheSlide[outSlideId] || []))
+        lines = $paintCache
+        ctx?.clearRect(0, 0, resolution.width, resolution.height)
+        redraw()
+
+        previousOutSlideId = outSlideId
+    }
+
+    let mounted = false
     onMount(() => {
         if (canvas) ctx = canvas.getContext("2d")
         if ($paintCache) {
-            lines = $paintCache
+            lines = clone(linkToSlide ? $paintCacheSlide[outSlideId] || [] : $paintCache)
             redraw()
         }
+        mounted = true
     })
 
     function redraw() {
+        if (!ctx) return
+
         for (var i = 1; i < lines.length; i++) {
-            let previous: any = lines[i - 1]
-            let current: any = lines[i]
+            let previous = lines[i - 1]
+            let current = lines[i]
             if (current !== "mouseup") {
                 if (previous === "mouseup") previous = current
 
@@ -46,20 +71,22 @@
 
     $: if (settings.clear) clear()
     function clear() {
+        if (!ctx) return
+
         ctx.clearRect(0, 0, resolution.width, resolution.height)
         lines = []
         paintCache.set([])
 
         setTimeout(() => {
-            drawSettings.update((ds: any) => {
-                delete ds.paint.clear
-                return ds
+            drawSettings.update((a) => {
+                if (a.paint?.clear) delete a.paint.clear
+                return a
             })
         }, 100)
     }
 
-    let drawStop: boolean = false
-    let timeout: any = null
+    let drawStop = false
+    let timeout: NodeJS.Timeout | null = null
     $: if (settings.dots) startTimeout()
     function startTimeout() {
         drawStop = false
@@ -75,7 +102,7 @@
 
     $: if (mouseDown && $draw && !drawStop) drawLine()
     function drawLine() {
-        if (!$draw || !previousPos) return
+        if (!$draw || !previousPos || !ctx) return
 
         // ctx.beginPath()
         ctx.moveTo(previousPos.x, previousPos.y)
@@ -92,25 +119,25 @@
             x: x,
             y: y,
             size: settings.size || 10,
-            color: settings.color || "white",
+            color: settings.color || "#ffffff"
         }
         lines.push(line)
         paintCache.set(lines)
     }
 
-    let previousPos: any = null
-    let mouseDown: boolean = false
+    let previousPos: Draw | null = null
+    let mouseDown = false
     $: {
         if ($draw !== null && !mouseDown) mouseDown = true
         else if ($draw === null) mouseDown = false
     }
-    $: if (mouseDown) {
+    $: if (mouseDown && ctx) {
         ctx.beginPath()
         previousPos = $draw
         // ctx.moveTo(previousPos.x, previousPos.y)
         ctx.lineWidth = settings.size || 10
         ctx.lineCap = "round"
-        ctx.strokeStyle = settings.color || "white"
+        ctx.strokeStyle = settings.color || "#ffffff"
     } else {
         previousPos = null
         if (lines.length && lines[lines.length - 1] !== "mouseup") lines.push("mouseup")

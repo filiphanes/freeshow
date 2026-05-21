@@ -1,22 +1,30 @@
 import { get } from "svelte/store"
-import { SHOW } from "../../../types/Channels"
-import type { Show } from "../../../types/Show"
-import { cachedShowsData, notFound, saved, shows, showsCache, showsPath, textCache } from "../../stores"
-import { updateCachedShow } from "./show"
 import { uid } from "uid"
-import { destroy } from "../../utils/request"
+import type { Show, TimelineAction } from "../../../types/Show"
+import { AudioPlayer } from "../../audio/audioPlayer"
+import type { ShowObj } from "../../classes/Show"
+import { fixShowIssues } from "../../converters/importHelpers"
+import { requestMain } from "../../IPC/main"
+import { cachedShowsData, categories, notFound, saved, shows, showsCache, textCache } from "../../stores"
+import { invalidateSearchIndex } from "../../utils/searchFast"
+import { Main } from "./../../../types/IPC/Main"
+import { getFileName } from "./media"
+import { getShowCacheId, updateCachedShow } from "./show"
 
-export function setShow(id: string, value: "delete" | Show): Show {
+export async function setShow(id: string, value: "delete" | Show): Promise<Show> {
     let previousValue: Show
 
     // update cache data if loading from shows list
     if (value !== "delete" && !get(showsCache)[id]) {
-        let showRef = get(shows)[id]
+        const showRef = get(shows)[id]
         if (showRef && value) {
             value.name = showRef.name
             value.category = showRef.category || null
             value.timestamps = showRef.timestamps || {}
+            value.quickAccess = showRef.quickAccess || {}
+            if (showRef.origin) value.origin = showRef.origin
             if (showRef.private) value.private = true
+            if (showRef.locked) value.locked = true
 
             // fix "broken" shows:
             if (!value.settings) value.settings = { activeLayout: "", template: null }
@@ -24,6 +32,14 @@ export function setShow(id: string, value: "delete" | Show): Show {
             if (!value.slides) value.slides = {}
             if (!value.layouts) value.layouts = {}
             if (!value.media) value.media = {}
+
+            // set metadata (CCLI) in quickAccess
+            if (value.meta.CCLI && !value.quickAccess?.metadata?.CCLI) {
+                if (!value.quickAccess?.metadata) value.quickAccess.metadata = {}
+                value.quickAccess.metadata.CCLI = value.meta.CCLI
+            }
+
+            value = await convertOldShowValues(value)
         }
     }
 
@@ -46,19 +62,23 @@ export function setShow(id: string, value: "delete" | Show): Show {
                 name: value.name,
                 category: value.category,
                 timestamps: value.timestamps,
+                quickAccess: value.quickAccess || {}
             }
 
+            if (value.origin) a[id].origin = value.origin
             if (value.private) a[id].private = true
+            if (value.locked) a[id].locked = true
         }
 
         return a
     })
 
-    console.log("SHOW UPDATED: ", id, value)
+    console.info("SHOW UPDATED: ", id, value)
 
     if (value && value !== "delete") {
         cachedShowsData.update((a) => {
-            a[id] = updateCachedShow(id, value)
+            const customId = getShowCacheId(id, get(showsCache)[id])
+            a[customId] = updateCachedShow(id, value)
             return a
         })
     }
@@ -72,99 +92,178 @@ export function setShow(id: string, value: "delete" | Show): Show {
     return previousValue!
 }
 
-export async function loadShows(s: string[]) {
-    let savedWhenLoading: boolean = get(saved)
+export async function convertOldShowValues(show: Show): Promise<Show> {
+    // convert Recording to timeline (pre 1.5.7)
+    await Promise.all(
+        Object.values(show.layouts).map(async (layout) => {
+            const rec = layout.recording?.[0]
+            if (!rec) return
 
-    return new Promise((resolve) => {
-        let count = 0
+            let actions: TimelineAction[] = []
+            // let maxTime: number = 0
 
-        s.forEach((id) => {
-            if (!get(shows)[id]) {
-                count++
-                notFound.update((a) => {
-                    a.show.push(id)
-                    return a
-                })
-                // resolve("not_found")
-            } else if (!get(showsCache)[id]) {
-                console.log("LOAD SHOWS:", s)
-                window.api.send(SHOW, { path: get(showsPath), name: get(shows)[id].name, id })
-            } else count++
-            // } else resolve("already_loaded")
-        })
+            // get any audio on first slide
+            const audioIds = layout.slides[0]?.audio || []
+            const audioPaths = audioIds.map((id) => show.media[id]?.path || "").filter(Boolean)
+            await Promise.all(
+                audioPaths.map(async (path) => {
+                    const duration = await AudioPlayer.getDuration(path)
+                    // if (duration > maxTime) maxTime = duration
 
-        // RECEIVE
-        let listenerId = uid()
-        window.api.receive(SHOW, receiveShow, listenerId)
-        function receiveShow(msg: any) {
-            count++
-
-            // prevent receiving multiple times
-            if (count >= s.length + 1) return
-
-            if (msg.error) {
-                notFound.update((a) => {
-                    a.show.push(msg.id)
-                    return a
-                })
-                // resolve("not_found")
-            } else if (!get(showsCache)[msg.id]) {
-                if (get(notFound).show.includes(msg.id)) {
-                    notFound.update((a) => {
-                        a.show.splice(a.show.indexOf(msg.id), 1)
-                        return a
+                    actions.push({
+                        id: uid(6),
+                        time: 0,
+                        duration,
+                        name: getFileName(path),
+                        type: "audio",
+                        data: { path }
                     })
-                }
+                })
+            )
+            if (audioIds.length) delete layout.slides[0].audio
 
-                setShow(msg.id || msg.content[0], msg.content[1])
+            let currentTime = 0
+            actions.push(
+                ...rec.sequence.map((seq) => {
+                    let slideId = seq.slideRef?.id
+                    // look for a parent slide
+                    if (!show.slides[slideId]?.group) {
+                        slideId = Object.keys(show.slides).find((id) => show.slides[id]?.children?.includes(slideId)) || ""
+                    }
+                    const slideGroup = show.slides[slideId]?.group || ""
+
+                    const time = currentTime
+                    currentTime += seq.time
+
+                    return {
+                        id: uid(6),
+                        time,
+                        name: slideGroup,
+                        type: "slide",
+                        data: seq.slideRef
+                    }
+                })
+            )
+
+            layout.timeline = { actions }
+            // if (maxTime) layout.timeline.maxTime = maxTime
+
+            // remove start recording action
+            const startRecordingAction = (layout.slides[0]?.actions?.slideActions || []).findIndex((a) => a.triggers?.includes("start_slide_recording"))
+            if (startRecordingAction > -1) {
+                layout.slides[0].actions!.slideActions!.splice(startRecordingAction, 1)
             }
 
-            if (count >= s.length) setTimeout(finished, 50)
-        }
-        if (count >= s.length) finished()
+            delete layout.recording
+        })
+    )
 
-        function finished() {
-            if (savedWhenLoading) {
-                setTimeout(() => {
-                    saved.set(true)
-                }, 100)
-            }
-
-            destroy(SHOW, listenerId)
-            resolve("loaded")
-        }
-    })
+    return show
 }
 
-export function saveTextCache(id: string, show: Show) {
-    if (!show?.slides) return
+export async function loadShows(s: string[], deleting = false) {
+    const savedBeforeLoading: boolean = !deleting && get(saved)
 
-    // get text
-    let txt = ""
-    Object.values(show.slides).forEach((slide) => {
-        slide.items.forEach((item) => {
-            item.lines?.forEach((line) => {
-                line.text?.forEach((text) => {
-                    txt += text.value
-                })
-                txt += " "
+    const notLoaded: string[] = []
+    s.forEach((id) => {
+        if (!get(shows)[id]) {
+            notFound.update((a) => {
+                a.show.push(id)
+                return a
             })
-            // txt += " - LINE - "
-        })
+        } else if (!get(showsCache)[id]) {
+            notLoaded.push(id)
+        }
     })
 
-    // trim
-    txt = txt.toLowerCase()
-    // txt = txt.toLowerCase().replace(/[^a-z0-9 ]+/g, "")
+    if (!notLoaded.length) return
+
+    await Promise.all(
+        notLoaded.map(async (showId) => {
+            const data = await requestMain(Main.SHOW, { name: get(shows)[showId]?.name, id: showId })
+            if (!data) return
+
+            if (data.error || !data.content) {
+                notFound.update((a) => {
+                    a.show.push(data.id)
+                    return a
+                })
+                return
+            }
+
+            // has been loaded in the meantime
+            if (get(showsCache)[data.id]) return
+
+            // remove from not found
+            if (get(notFound).show.includes(data.id)) {
+                notFound.update((a) => {
+                    a.show.splice(a.show.indexOf(data.id), 1)
+                    return a
+                })
+            }
+
+            // might have been saved wrongly
+            if (typeof data.content[1] === "string") {
+                try {
+                    data.content[1] = JSON.parse(data.content[1])
+                    if (data.content[1]?.[1]?.name) data.content[1] = data.content[1][1]
+                } catch (err) {
+                    return
+                }
+            }
+
+            const show = fixShowIssues(data.content[1])
+            if (!show) return
+
+            await setShow(data.id || data.content[0], show)
+        })
+    )
+
+    if (savedBeforeLoading) {
+        setTimeout(() => saved.set(true), 200)
+    }
+}
+
+let updateTimeout: NodeJS.Timeout | null = null
+let tempCache: { [key: string]: string } = {}
+export function saveTextCache(id: string, show: Show) {
+    // don't cache scripture/calendar shows text or archived categories
+    if (!show?.slides || show?.reference?.type || get(categories)[show.category || ""]?.isArchive) return
+
+    const txt = getTextCacheString(show)
+    tempCache[id] = txt
+
+    // prevent rapid updates
+    if (updateTimeout) clearTimeout(updateTimeout)
+    updateTimeout = setTimeout(() => {
+        textCache.set({ ...get(textCache), ...tempCache })
+        tempCache = {}
+        invalidateSearchIndex()
+    }, 1000)
+}
+function getTextCacheString(show: Show) {
+    return Object.values(show.slides)
+        .flatMap((slide) => slide?.items)
+        .flatMap((item) => item?.lines || [])
+        .flatMap((line) => line?.text || [])
+        .map((text) => text?.value || "")
+        .join(" ")
+        .toLowerCase()
+    // .replace(/[^a-z0-9 ]+/g, "")
 
     // encode
     // txt = window.btoa(txt)
     // txt = Buffer.from(txt).toString("base64")
     // Buffer.from(encode, 'base64').toString('utf-8')
     // window.atob(encode)
+}
 
-    textCache.update((a) => {
-        a[id] = txt
-        return a
-    })
+export function setQuickAccessMetadata(show: ShowObj, key: string, value: string) {
+    if (!value) return show
+
+    if (!show.quickAccess) show.quickAccess = {}
+    if (!show.quickAccess.metadata) show.quickAccess.metadata = {}
+    show.quickAccess.metadata[key] = value
+
+    return show
 }

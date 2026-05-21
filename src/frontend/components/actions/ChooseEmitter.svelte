@@ -1,0 +1,177 @@
+<script lang="ts">
+    import { createEventDispatcher } from "svelte"
+    import { actions, activePopup, emitters, popupData } from "../../stores"
+    import { translateText } from "../../utils/language"
+    import { clone, keysToID, sortByName } from "../helpers/array"
+    import T from "../helpers/T.svelte"
+    import DynamicList from "../input/DynamicList.svelte"
+    import InputRow from "../input/InputRow.svelte"
+    import MaterialDropdown from "../inputs/MaterialDropdown.svelte"
+    import MaterialTextInput from "../inputs/MaterialTextInput.svelte"
+    import { API_emitter } from "./api"
+    import { formatData } from "./emitters"
+    import MidiValues from "./MidiValues.svelte"
+    import { uid } from "uid"
+    import MaterialButton from "../inputs/MaterialButton.svelte"
+
+    export let value: API_emitter
+
+    $: emittersList = clone(
+        sortByName(
+            keysToID($emitters).map((a) => ({ value: a.id, label: a.name })),
+            "label"
+        )
+    )
+
+    $: emitter = $emitters[value.emitter]
+
+    let dispatch = createEventDispatcher()
+    function updateValue(key: string, v: any) {
+        if (key === "emitter") {
+            value.templateValues = []
+            value.template = ""
+        } else if (key === "template") {
+            let inputs = clone(emitter?.templates?.[v]?.inputs || [])
+            value.templateValues = inputs
+        } else if (key === "data") {
+            v = v.detail
+        }
+
+        value[key] = v
+        dispatch("change", value)
+    }
+
+    function setTemplateValue(index: string | number, e: any, key = "value") {
+        let v = e.detail
+
+        if (!value.templateValues) value.templateValues = clone(emitter?.templates?.[v]?.inputs || [])
+
+        let templateValues = value.templateValues || []
+        if (!templateValues[index]) templateValues[index] = { name: "", value: "" }
+        templateValues[index][key] = v
+        updateValue("templateValues", templateValues)
+    }
+    function setMidiTemplateValue(e: any) {
+        let values = e.detail?.values
+
+        let templateValues = value.templateValues || []
+        if (!templateValues[0]) templateValues[0] = { name: "", value: "" }
+        templateValues[0].value = values
+        updateValue("templateValues", templateValues)
+    }
+
+    function createTemplateValue() {
+        let templateValues = value.templateValues || []
+        templateValues.push({ name: "", value: "" })
+        updateValue("templateValues", templateValues)
+    }
+    function removeTemplateValue(index: string) {
+        let templateValues = value.templateValues || []
+        templateValues.slice(Number(index), 1)
+        updateValue("templateValues", templateValues)
+    }
+
+    $: activeTemplate = value.template || "custom"
+    $: templatesList = [
+        { value: "custom", label: translateText("actions.custom_key") },
+        ...clone(
+            sortByName(
+                keysToID(emitter?.templates || {}).map((a) => ({ value: a.id, label: a.name })),
+                "label"
+            )
+        )
+    ]
+    $: templateInputs = (emitter?.templates?.[activeTemplate]?.inputs || []).filter((a) => emitter?.type === "midi" || a.name)
+
+    $: customTemplateInputs = (value.templateValues || []).map((a, i) => ({ ...a, id: i.toString() }))
+
+    $: dataPreview = value.templateValues?.length ? formatData[emitter?.type]?.(value.templateValues, value.data) : ""
+
+    function editEmitter() {
+        const id = value.emitter
+        if (!id) return
+
+        popupData.set({ id, actionData: $popupData })
+        activePopup.set("manage_emitters")
+    }
+</script>
+
+<InputRow>
+    <MaterialDropdown
+        label="emitters.emitter {emitter?.type ? `<span style='color: var(--text);opacity: 0.5;font-weight: normal;font-size: 0.8em;margin-left: 10px;'>${emitter.type.toUpperCase()}</span>` : ''}"
+        options={emittersList}
+        value={value.emitter}
+        on:new={(e) => {
+            const id = uid()
+            const name = e.detail
+            const actionId = $popupData?.id
+            if (!actionId) return
+
+            actions.update((a) => {
+                a[actionId].name += `: ${name}`
+                const triggerId = a[actionId].triggers?.find((a) => a.includes("emit_action"))
+                if (!triggerId) return a
+
+                if (!a[actionId].actionValues) a[actionId].actionValues = {}
+                a[actionId].actionValues[triggerId] = { emitter: id }
+
+                return a
+            })
+
+            popupData.set({ name, id, actionData: $popupData })
+            activePopup.set("manage_emitters")
+        }}
+        on:change={(e) => updateValue("emitter", e.detail)}
+        addNew="timer.create"
+    />
+    {#if value.emitter}
+        <MaterialButton title="titlebar.edit" icon="edit" on:click={editEmitter} />
+    {/if}
+</InputRow>
+
+{#if value.emitter}
+    {#if emitter?.description}
+        <InputRow style="padding: 10px;display: flex;gap: 8px;background: var(--primary-darker);font-size: 0.9em;">
+            <p><T id="midi.description" /></p>
+            <p style="font-style: italic;opacity: 0.5;overflow: hidden;" data-title={emitter.description}>{emitter.description}</p>
+        </InputRow>
+    {/if}
+
+    <MaterialDropdown label="emitters.message_template" options={templatesList} value={activeTemplate || "custom"} on:change={(e) => updateValue("template", e.detail)} />
+
+    {#if templateInputs.length}
+        {#if emitter?.templates?.[activeTemplate]?.description}
+            <InputRow style="padding: 10px;display: flex;gap: 8px;background: var(--primary-darker);font-size: 0.9em;">
+                <p><T id="midi.description" /></p>
+                <p style="font-style: italic;opacity: 0.5;overflow: hidden;" data-title={emitter.templates[activeTemplate].description}>{emitter.templates[activeTemplate].description}</p>
+            </InputRow>
+        {/if}
+
+        {#if emitter?.type !== "midi"}
+            {#each templateInputs as input, i}
+                {@const stringValue = typeof (value.templateValues?.[i] || input).value === "string" ? (value.templateValues?.[i] || input).value : ""}
+
+                <MaterialTextInput label={input.name} disabled={!!input.value} placeholder={translateText("variables.value")} value={stringValue} on:change={(e) => setTemplateValue(i, e)} />
+            {/each}
+        {/if}
+    {:else if emitter?.type === "midi"}
+        <MidiValues value={{ ...emitter.signal, values: typeof customTemplateInputs[0]?.value === "object" ? customTemplateInputs[0].value : {} }} on:change={(e) => setMidiTemplateValue(e)} type="emitter" />
+    {:else}
+        <DynamicList addDisabled={!!customTemplateInputs?.find((a) => !a.name && !a.value)} items={customTemplateInputs} let:item={input} on:add={createTemplateValue} on:delete={(e) => removeTemplateValue(e.detail)} allowOpen={false} nothingText={false}>
+            <div style="display: flex;width: 100%;">
+                <MaterialTextInput label="inputs.name" value={input.name} on:change={(e) => setTemplateValue(input.id, e, "name")} style="width: 50%;" />
+                <MaterialTextInput label="variables.value" value={input.value} on:change={(e) => setTemplateValue(input.id, e, "value")} style="width: 50%;" />
+            </div>
+        </DynamicList>
+    {/if}
+
+    <!-- extra DATA -->
+    {#if emitter?.type === "osc"}
+        <MaterialTextInput label="emitters.data" value={value.data || ""} on:change={(e) => updateValue("data", e)} />
+    {/if}
+
+    <InputRow style="background-color: var(--primary-darker);display: flex;align-items: center;justify-content: space-between;padding: 10px;">
+        <p><T id="timer.preview" /></p>
+        <p style="opacity: 0.5;overflow: hidden;" data-title={dataPreview}>{dataPreview}</p>
+    </InputRow>
+{/if}

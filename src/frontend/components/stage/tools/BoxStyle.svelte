@@ -1,46 +1,132 @@
 <script lang="ts">
-    import { activeStage, stageShows } from "../../../stores"
+    import { activeStage, stageShows, theme, themes } from "../../../stores"
+    import { MAX_FONT_SIZE } from "../../edit/scripts/autosize"
     import { addStyleString } from "../../edit/scripts/textStyle"
     import EditValues from "../../edit/tools/EditValues.svelte"
-    import T from "../../helpers/T.svelte"
+    import { itemBoxes, setBoxInputValue } from "../../edit/values/boxes"
     import { clone } from "../../helpers/array"
     import { history } from "../../helpers/history"
+    import { getCustomMetadata } from "../../helpers/show"
     import { getStyles } from "../../helpers/style"
-    import Center from "../../system/Center.svelte"
     import { updateStageShow } from "../stage"
-    import { textEdits } from "../values/text"
+    import { slideTextSections } from "../values/text"
 
-    $: items = $activeStage.items
-    $: stageItems = $stageShows[$activeStage.id!].items
-    $: item = items ? stageItems[items[0]] : null
+    let activeItemIds: string[] = []
+    $: activeItemIds = $activeStage.items?.length ? $activeStage.items : Object.keys(stageItems)
+    $: stageItems = $stageShows[$activeStage.id!]?.items || {}
+    $: activeItemId = activeItemIds[0] || ""
 
-    let edits: any = {}
-    $: if (item) {
-        edits = clone(textEdits)
+    $: item = activeItemId ? stageItems[activeItemId] : null
 
-        // custom input values
-        if (items[0].includes("slide") && !items[0].includes("text") && !items[0].includes("notes")) edits = { chords: edits.chords }
-        else if (items[0].includes("output")) edits = {}
+    $: type = item?.type || ""
+    $: {
+        if (activeItemId.includes("tracker")) type = "slide_tracker"
+        else if (item?.type === "slide_text" || item?.type === "slide_notes" || item?.type === "variable" || activeItemId.includes("text") || activeItemId.includes("slide") || activeItemId.includes("notes") || activeItemId.includes("variable")) type = "text"
+        else if (activeItemId.includes("clock")) type = "clock"
+        else if (activeItemId.includes("timer")) type = "timer"
     }
 
-    let data: { [key: string]: any } = {}
-    $: if (item?.style || item === null) data = getStyles(item?.style, true)
+    $: isSlideText = item?.type === "slide_text" // || activeItemId?.includes("slide_text")
+    $: isTextItem = item?.type === "slide_text" || item?.type === "text"
+    $: stageSections = item ? clone(isSlideText ? slideTextSections : itemBoxes[item.type || ""]?.sections) || {} : {}
 
-    // $: if (edits) updateAuto(item?.auto || true)
-    $: if (item) updateAuto(item?.auto ?? true)
-    $: if (edits.chords) {
-        edits.chords[0].value = item?.chords
-        edits.chords[1].hidden = !item?.chords
-        edits.chords[2].hidden = !item?.chords
+    $: if (item?.type === "text" && stageSections) {
+        delete stageSections.chords
+        delete stageSections.scrolling
+    }
+    $: if (isSlideText) {
+        stageSections = clone(item?.keepStyle ? { default: slideTextSections.default, chords: slideTextSections.chords, special: slideTextSections.special } : slideTextSections)
 
-        if (item?.chordsData?.color) edits.chords[1].value = item.chordsData.color
-        if (item?.chordsData?.size) edits.chords[2].value = item.chordsData.size
+        // line height
+        if (stageSections.text) stageSections.text = { inputs: [...stageSections.text.inputs, [{ id: "style", key: "line-height", type: "number", value: 1.1, multiplier: 10, extension: "em", values: { label: "edit.line_height", max: 50 } }]] }
+
+        // setBoxInputValue(stageSections, "font", "font-weight", "default", "bold")
+
+        // allow no color (inherit from slide)
+        if (stageSections.font) stageSections.font.inputs[0][1].values.allowEmpty = true
     }
 
-    function updateAuto(value) {
-        let autoIndex = edits?.default?.findIndex((a) => a.id === "auto")
-        if (!autoIndex) return
-        edits.default[autoIndex].value = value
+    $: if (stageSections?.CSS) {
+        setBoxInputValue(stageSections, "CSS", "CSS_text", "value", item?.style || "")
+    }
+
+    // align
+    let alignStyle: any = {}
+    let lineAlignStyle: any = {}
+    $: if (item?.align) alignStyle = { "align-items": item.align }
+    $: if (item?.alignX) lineAlignStyle = { "text-align": item.alignX }
+
+    $: customValues = {
+        "text-align": lineAlignStyle["text-align"] || "center",
+        "align-items": alignStyle["align-items"] || "center"
+    }
+
+    let styles: { [key: string]: any } = {}
+    $: if (item?.style || item === null) styles = getStyles(item?.style, true)
+
+    $: if (stageSections?.font || type === "text") {
+        setBoxInputValue(stageSections, "font", "font-size", "disabled", !isTextItem && item?.textFit === "growToFit")
+        setBoxInputValue(stageSections, "font", "textFit", "value", item?.textFit || "growToFit")
+        // setBoxInputValue(stageSections, "font", "auto", "value", item.auto ?? true)
+
+        setBoxInputValue(stageSections, "text", "nowrap", "value", !!styles["white-space"]?.includes("nowrap"))
+    }
+
+    $: if (item && type === "text") {
+        let sectionId = stageSections?.font ? "font" : "default"
+        setBoxInputValue(stageSections, sectionId, "font-family", "default", "Arial")
+        setBoxInputValue(stageSections, sectionId, "font-family", "styleValue", styles["font"] || "")
+        // setBoxInputValue(stageSections, sectionId, "font-size", "disabled", item.type === "text" ? item.auto === true : item.auto !== false)
+        // setBoxInputValue(edits, sectionId, "textFit", "hidden", item?.auto !== false)
+    }
+    $: if (item && isSlideText) {
+        setBoxInputValue(stageSections, "default", "lineCount", "hidden", Number(item.slideOffset || 0) === 0)
+        setBoxInputValue(stageSections, "default", "invertItems", "hidden", Number(item.itemNumber || 0) !== 0)
+    }
+
+    $: if (item?.type === "slide_tracker" || activeItemId?.includes("tracker")) {
+        setBoxInputValue(stageSections, "default", "tracker.accent", "value", item?.tracker?.accent || $themes[$theme]?.colors?.secondary || "#F0008C")
+
+        const metadataLabelMap: Record<string, string> = {
+            number: "meta.number",
+            title: "meta.title",
+            artist: "meta.artist",
+            author: "meta.author",
+            composer: "meta.composer",
+            publisher: "meta.publisher",
+            copyright: "meta.copyright",
+            CCLI: "meta.CCLI",
+            year: "meta.year",
+            key: "meta.key"
+        }
+        const metadataOptions = [{ value: "name", label: "show.name" }, ...Object.keys(getCustomMetadata()).map((key) => ({ value: key, label: metadataLabelMap[key] || key }))]
+        setBoxInputValue(stageSections, "default", "tracker.projectMetadata", "options", metadataOptions)
+
+        setBoxInputValue(stageSections, "default", "tracker.childProgress", "hidden", item?.tracker?.type !== "group")
+        setBoxInputValue(stageSections, "default", "tracker.oneLetter", "hidden", item?.tracker?.type !== "group")
+        setBoxInputValue(stageSections, "default", "tracker.projectMetadata", "hidden", item?.tracker?.type !== "project")
+    }
+
+    $: if (item?.type === "camera") {
+        if (item.device?.name) setBoxInputValue(stageSections, "default", "device", "name", item.device.name)
+    }
+
+    $: if (item?.type === "timer" && item) {
+        setBoxInputValue(stageSections, "default", "timer.circleMask", "hidden", item.timer?.viewType !== "circle")
+        // setBoxInputValue(stageSections, "default", "timer.showHours", "value", item.timer?.showHours !== false)
+        setBoxInputValue(stageSections, "default", "timer.showHours", "hidden", (item.timer?.viewType || "time") !== "time")
+    }
+    $: if (item?.type === "clock" && item) {
+        const clockType = item.clock?.type || "digital"
+        const dateFormat = item.clock?.dateFormat || "none"
+
+        setBoxInputValue(stageSections, "default", "clock.dateFormat", "hidden", clockType !== "digital")
+        setBoxInputValue(stageSections, "default", "clock.showTime", "hidden", clockType !== "digital" || dateFormat === "none")
+        setBoxInputValue(stageSections, "default", "clock.seconds", "hidden", clockType === "custom" || (clockType === "digital" && item.clock?.showTime === false && dateFormat !== "none"))
+        setBoxInputValue(stageSections, "default", "clock.customFormat", "hidden", clockType !== "custom")
+
+        // show seconds by default on stage
+        setBoxInputValue(stageSections, "default", "clock.seconds", "value", true)
     }
 
     function setValue(input: any) {
@@ -48,39 +134,77 @@
         // if (input.id === "filter") value = addFilterString(item?.filter || "", [input.key, value])
         // else if (input.key) value = { ...((item as any)?.[input.key] || {}), [input.key]: value }
 
-        if (input.id === "auto") updateAuto(value)
-
         if (input.id.includes(".")) {
             let splitted = input.id.split(".")
-            console.log(splitted)
             input.id = splitted[0]
             let newValue = item?.[input.id] || {}
+            if (typeof newValue === "string") return // something is wrong
             newValue[splitted[1]] = value
             value = newValue
-            console.log(value)
         }
-
-        history({ id: "UPDATE", newData: { data: value, key: "items", subkey: input.id, keys: items }, oldData: { id: $activeStage.id }, location: { page: "stage", id: "stage_item_content", override: $activeStage.id + items.join("") } })
+        history({
+            id: "UPDATE",
+            newData: { data: value, key: "items", subkey: input.id, keys: activeItemIds },
+            oldData: { id: $activeStage.id },
+            location: { page: "stage", id: "stage_item_content", override: $activeStage.id + activeItemIds.join("") }
+        })
     }
+
+    function updateAlign(input) {
+        let id = "align"
+        if (input.key === "text-align") id = "alignX"
+
+        let value = input.value
+
+        history({
+            id: "UPDATE",
+            newData: { data: value, key: "items", subkey: id, keys: activeItemIds },
+            oldData: { id: $activeStage.id },
+            location: { page: "stage", id: "stage_item_content", override: $activeStage.id + activeItemIds.join("") }
+        })
+    }
+
+    // WIP textbox lines does not update only selected text
 
     function updateStyle(e: any) {
         let input = e.detail
-        console.log(input)
 
-        if (input.id !== "style") {
+        if (input.key === "text-align" || input.key === "align-items") {
+            updateAlign(input)
+            return
+        }
+
+        if (input.id === "nowrap") input = { ...input, id: "style", key: "white-space", value: input.value ? "nowrap" : undefined }
+
+        if (input.id !== "style" && !input.id.includes("CSS")) {
             setValue(input)
             return
         }
 
-        let value: string = addStyleString(item!.style, [input.key, input.value]) || ""
+        let value: string = addStyleString(item?.style || "", [input.key, input.value]) || ""
 
-        if (input.id === "CSS") value = input.value.replaceAll("\n", "")
+        if (input.id.includes("CSS")) value = input.value.replaceAll("\n", "")
 
         if (!value) return
 
-        console.log(item?.style, value)
+        // only update items with same type
+        let updateType = item?.type
 
-        history({ id: "UPDATE", newData: { data: value, key: "items", subkey: "style", keys: items }, oldData: { id: $activeStage.id }, location: { page: "stage", id: "stage_item_content", override: $activeStage.id + items.join("") } })
+        // only update changed value
+        let styles: { [key: string]: string } = {}
+        activeItemIds.forEach((itemId) => {
+            let item = stageItems[itemId]
+            if (!item || (!$activeStage.items?.length && item.type !== updateType)) return
+
+            styles[itemId] = input.id.includes("CSS") ? value : addStyleString(item.style, [input.key, input.value])
+        })
+
+        history({
+            id: "UPDATE",
+            newData: { data: styles, key: "items", subkey: "style", keys: Object.keys(styles) },
+            oldData: { id: $activeStage.id },
+            location: { page: "stage", id: "stage_item_content", override: $activeStage.id + activeItemIds.join("") }
+        })
 
         if (!timeout) {
             updateStageShow()
@@ -91,89 +215,27 @@
         }
     }
 
-    let timeout: any = null
+    function updateStyle2(e: any) {
+        const input = e.detail
+        input.value = input.values.value
+        input.input = input.type
+
+        if (input.id === "textFit") {
+            updateStyle({ detail: { id: "auto", value: input.value !== "none" } })
+
+            if (isTextItem) {
+                let newFontSize = 0
+                // change font size to more clearly indicate what the different text fit does
+                if (input.value !== "growToFit" && Number(styles["font-size"]) < 200) newFontSize = 0
+                else newFontSize = input.value !== "growToFit" ? 100 : MAX_FONT_SIZE
+                if (newFontSize) updateStyle({ detail: { name: "font_size", id: "style", key: "font-size", value: newFontSize + "px" } })
+            }
+        }
+
+        updateStyle({ detail: input })
+    }
+
+    let timeout: NodeJS.Timeout | null = null
 </script>
 
-{#if item}
-    <EditValues {edits} defaultEdits={clone(textEdits)} styles={data} {item} on:change={updateStyle} />
-{:else}
-    <Center faded>
-        <T id="empty.items" />
-    </Center>
-{/if}
-
-<!-- <Panel>
-  {#if items.length}
-    {#each items as id, i}
-      {#if i > 0}<hr />{/if}
-      <h6>
-        {#if id.includes("timers")}
-          {#if $timers[id.split("#")[1]]?.name}
-            {$timers[id.split("#")[1]].name}
-          {:else}
-            <T id="items.timer" />
-          {/if}
-        {:else}
-          <T id="stage.{id.split('#')[1]}" />
-        {/if}
-      </h6>
-      <div class="gap">
-        <div class="titles">
-          {#each getTitles(id) as title}
-            <p><T id="stage.{title}" /></p>
-          {/each}
-        </div>
-        <div style="flex: 1;">
-          {#each getTitles(id) as title}
-            {#if title === "color" || title === "overrun"}
-              <Color value={style[id][title] || defaults[title]} on:input={(e) => inputChange(e, title)} />
-            {:else}
-              <NumberInput value={style[id][title] || defaults[title]} on:change={(e) => update(title, e.detail)} />
-            {/if}
-          {/each}
-        </div>
-      </div>
-
-      <div class="line" style="margin-top: 10px;">
-        <IconButton on:click={() => update("text-align", "left", true)} title={$dictionary.edit._title_left} icon="alignLeft" active={align[id]?.["text-align"] === "left"} />
-        <IconButton
-          on:click={() => update("text-align", "center", true)}
-          title={$dictionary.edit._title_center}
-          icon="alignCenter"
-          active={align[id]?.["text-align"] === "center" || !align[id]?.["text-align"]}
-        />
-        <IconButton on:click={() => update("text-align", "right", true)} title={$dictionary.edit._title_right} icon="alignRight" active={align[id]?.["text-align"] === "right"} />
-        <IconButton
-          on:click={() => update("text-align", "justify", true)}
-          title={$dictionary.edit._title_justify}
-          icon="alignJustify"
-          active={align[id]?.["text-align"] === "justify"}
-        />
-      </div>
-      <div class="line">
-        <IconButton
-          on:click={() => update("align-items", "flex-start", true)}
-          title={$dictionary.edit._title_top}
-          icon="alignTop"
-          active={align[id]?.["align-items"] === "flex-start"}
-        />
-        <IconButton
-          on:click={() => update("align-items", "center", true)}
-          title={$dictionary.edit._title_center}
-          icon="alignMiddle"
-          active={align[id]?.["align-items"] === "center" || !align[id]?.["align-items"]}
-        />
-        <IconButton
-          on:click={() => update("align-items", "flex-end", true)}
-          title={$dictionary.edit._title_bottom}
-          icon="alignBottom"
-          active={align[id]?.["align-items"] === "flex-end"}
-        />
-      </div>
-    {/each}
-  {:else}
-    <Center faded>
-      <T id="empty.items" />
-    </Center>
-  {/if}
-</Panel> -->
+<EditValues sections={stageSections} {styles} {item} {customValues} on:change={updateStyle2} isStage />

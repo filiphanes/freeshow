@@ -1,34 +1,48 @@
 <script lang="ts">
     import { onMount } from "svelte"
-    import { resized } from "../../stores"
+    import { drawer, editColumns, localeDirection, os, resized } from "../../stores"
+    import { DEFAULT_WIDTH } from "../../utils/common"
+    import Icon from "../helpers/Icon.svelte"
 
     export let id: string
     export let side: "left" | "right" | "top" | "bottom" = "left"
-    export let width: number = 300
-    let defaultWidth: number = Number(width.toString())
-    let handleWidth: number = 4
-    export let maxWidth: number = defaultWidth * 2 // * 3
+
+    const originalSide = side
+    $: if ($localeDirection === "rtl") {
+        side = originalSide === "left" ? "right" : originalSide === "right" ? "left" : originalSide
+    } else {
+        side = originalSide
+    }
+
+    export let defaultWidth = DEFAULT_WIDTH
+    let width: number = defaultWidth
+    let handleWidth = 4
+    export let maxWidth: number = defaultWidth * 2.2
     export let minWidth: number = handleWidth
+
+    $: if (!mouse && $resized[id]) width = $resized[id]
 
     let loaded = false
     onMount(() => {
         setTimeout(() => {
-            width = $resized[id] || 300
+            width = $resized[id] ?? defaultWidth
+            // reset to default if closed on startup
+            if ((id === "leftPanel" || id === "rightPanel") && width <= handleWidth) width = defaultWidth
             loaded = true
-        }, 1000)
+        }, 2000)
     })
 
-    let move: boolean = false
+    let move = false
     let mouse: null | { x: number; y: number; offset: number; target: any } = null
 
-    $: handleWidth = width <= 8 ? 8 : 4
+    $: handleWidth = width <= 8 ? 6 : 4
 
     const conditions = {
         left: (e: any) => e.target.closest(".panel")?.offsetWidth - e.offsetX <= handleWidth,
         right: (e: any) => e.clientX < e.target.closest(".panel")?.offsetLeft + handleWidth && e.offsetX <= handleWidth && e.offsetX >= 0,
         // top: (e: any) => e.target.closest(".panel")?.offsetHeight - e.offsetY <= handleWidth,
         top: (e: any) => e.clientY < e.target.closest(".panel")?.offsetTop + handleWidth && e.offsetY <= handleWidth && e.offsetY >= 0,
-        bottom: (e: any) => e.clientY < e.target.closest(".panel")?.offsetTop + e.target.closest(".panel")?.offsetParent.offsetTop + handleWidth && e.offsetY <= handleWidth && e.offsetY >= 0,
+        bottom: (e: any) => e.clientY < e.target.closest(".panel")?.offsetTop + e.target.closest(".panel")?.offsetParent.offsetTop + handleWidth && e.offsetY <= handleWidth && e.offsetY >= 0
     }
 
     function mousedown(e: any) {
@@ -38,7 +52,7 @@
             x: e.clientX,
             y: e.clientY,
             offset: side === "top" || side === "bottom" ? window.innerHeight - width - e.clientY : window.innerWidth - width - e.clientX,
-            target: e.target,
+            target: e.target
         }
     }
 
@@ -46,14 +60,19 @@
         left: (e: any) => e.clientX,
         right: (e: any) => window.innerWidth - e.clientX - mouse!.offset,
         top: (e: any) => e.clientY,
-        bottom: (e: any) => window.innerHeight - e.clientY - mouse!.offset,
+        bottom: (e: any) => window.innerHeight - e.clientY - mouse!.offset
     }
 
+    const MIN_WIDTH = 0.69
     function getWidth(width: number) {
-        if (width < (defaultWidth * 0.6) / 2) return minWidth
-        if (width < defaultWidth * 0.6) return defaultWidth * 0.6
+        if (width < (defaultWidth * MIN_WIDTH) / 2) return minWidth
+        if (width < defaultWidth * MIN_WIDTH) return defaultWidth * MIN_WIDTH
         if (width > defaultWidth - 20 && width < defaultWidth + 20) return defaultWidth
         if (width > maxWidth) return maxWidth
+        if (side === "bottom") {
+            const availableHeight = window.innerHeight - ($os.platform === "win32" ? 25 : 0) - $drawer.height - 40
+            if (width > availableHeight) return availableHeight
+        }
         move = true
         return width
     }
@@ -63,7 +82,6 @@
     }
 
     let storeWidth: null | number = null
-    // TODO: pressing button with keyboard will close panel
     function click(e: any) {
         if (move || !conditions[side](e)) {
             move = false
@@ -71,14 +89,22 @@
         }
 
         if (width > minWidth) {
-            storeWidth = width
-            width = minWidth
+            // don't click to close, only to open (to prevent accidentally closing without knowing)
+            // storeWidth = width
+            // width = minWidth
             return
         }
 
         width = storeWidth === null || storeWidth < defaultWidth / 2 ? defaultWidth : storeWidth
         storeWidth = null
     }
+
+    // const handleKeydown = createKeydownHandler((_e: KeyboardEvent) => {
+    //     if (width <= minWidth) {
+    //         width = storeWidth === null || storeWidth < defaultWidth / 2 ? defaultWidth : storeWidth
+    //         storeWidth = null
+    //     }
+    // })
 
     $: if (width !== null) storeValue()
     function storeValue() {
@@ -88,6 +114,19 @@
             a[id] = width
             return a
         })
+
+        if (side === "left") {
+            let gap = maxWidth - defaultWidth
+            let triple = defaultWidth + gap * 0.8
+            let double = defaultWidth + gap * 0.4
+            if (width > triple && $editColumns === 2) {
+                editColumns.set(3)
+            } else if (width > double && width < triple && ($editColumns === 1 || $editColumns === 3)) {
+                editColumns.set(2)
+            } else if (width <= double && $editColumns === 2) {
+                editColumns.set(1)
+            }
+        }
     }
 
     function mouseup(e: any) {
@@ -98,7 +137,17 @@
 
 <svelte:window on:mouseup={mouseup} on:mousemove={mousemove} />
 
-<div {id} style="{side === 'left' || side === 'right' ? 'width' : 'height'}: {width}px; --handle-width: {handleWidth}px" class="panel bar_{side}" class:zero={width <= handleWidth} on:mousedown={mousedown} on:click={click}>
+<!-- Did not work, and broke presentation navigation: -->
+<!-- on:keydown={handleKeydown}
+role="button"
+tabindex="0"
+aria-label="Resize panel {id}"
+aria-expanded={width > minWidth} -->
+<div {id} style="{side === 'left' || side === 'right' ? 'width' : 'height'}: {width}px;{side === 'left' || side === 'right' ? '' : `min-height: ${width}px;`} --handle-width: {handleWidth}px" class="panel bar_{side}" class:zero={width <= handleWidth} on:mousedown={mousedown} on:click={click}>
+    {#if width <= handleWidth}
+        <Icon id="arrow_right" size={1.3} white />
+    {/if}
+
     <slot {width} />
 </div>
 
@@ -109,19 +158,29 @@
         justify-content: space-between;
         overflow: hidden;
         position: relative;
+        /* background: var(--primary); */
+
+        /* pressing shift when active created an outline around the element */
+        outline: none;
     }
 
     :global(.bar_left) {
-        padding-right: var(--handle-width);
+        padding-inline-end: var(--handle-width);
+        /* border-radius: 0 12px 12px 0; */
+        /* box-shadow: 2px 0 14px rgb(0 0 0 / 0.12); */
     }
     :global(.bar_right) {
-        padding-left: var(--handle-width);
+        padding-inline-start: var(--handle-width);
+        /* border-radius: 12px 0 0 12px; */
+        /* box-shadow: -2px 0 14px rgb(0 0 0 / 0.12); */
     }
     :global(.bar_top) {
         padding-bottom: var(--handle-width);
+        /* box-shadow: 0 2px 14px rgb(0 0 0 / 0.12); */
     }
     :global(.bar_bottom) {
         padding-top: var(--handle-width);
+        /* box-shadow: 0 -2px 14px rgb(0 0 0 / 0.12); */
     }
 
     div::after {
@@ -132,16 +191,43 @@
         height: 100%;
     }
     .zero::after {
-        background-color: var(--secondary);
+        /* background-color: var(--secondary); */
+        background-color: var(--primary-lighter);
+    }
+    .zero :global(svg) {
+        pointer-events: none;
+
+        z-index: 1;
+        position: absolute;
+        top: 50%;
+
+        left: 50%;
+        transform: translate(-50%, -50%);
+
+        /* right: 0;
+        transform: translate(62%, -50%); */
+    }
+    .bar_right.zero :global(svg) {
+        transform: translate(-50%, -50%) rotate(180deg);
+
+        /* right: unset;
+        left: 0;
+        transform: translate(-62%, -50%) rotate(180deg); */
+    }
+    .bar_bottom.zero :global(svg) {
+        transform: translate(-50%, -50%) rotate(-90deg);
+    }
+    .bar_top.zero :global(svg) {
+        transform: translate(-50%, -50%) rotate(90deg);
     }
 
     div:global(.bar_left)::after {
-        right: 0;
+        right: 0; /* stylelint-disable-line */
         width: var(--handle-width);
         cursor: ew-resize;
     }
     div:global(.bar_right)::after {
-        left: 0;
+        left: 0; /* stylelint-disable-line */
         width: var(--handle-width);
         cursor: ew-resize;
     }

@@ -1,37 +1,42 @@
 <script lang="ts">
-    import { createEventDispatcher } from "svelte"
+    import { createEventDispatcher, onDestroy } from "svelte"
     import Icon from "../helpers/Icon.svelte"
     import Button from "./Button.svelte"
     import TextInput from "./TextInput.svelte"
 
     export let value: number
-    export let title: string = ""
-    export let style: string = ""
-    export let inputMultiplier: number = 1
-    export let decimals: number = 0
-    export let step: number = 1
-    export let min: number = 0
-    export let max: number = 1000
-    export let fixed: number = 0
-    export let outline: boolean = false
-    export let buttons: boolean = true
-    export let disabled: boolean = false
-    export let disableHold: boolean = false
+    export let title = ""
+    export let visibleTitle = false
+    export let style = ""
+    export let inputMultiplier = 1
+    export let decimals = 0
+    export let step = 1
+    export let min = 0
+    export let max = 1000
+    export let fixed = 0
+    export let outline = false
+    export let buttons = true
+    export let disabled = false
+    export let disableHold = false
 
     const dispatch = createEventDispatcher()
     const increment = (customStep: number = step) => dispatch("change", Math.min(Number(value) + customStep, max).toFixed(decimals))
     const decrement = (customStep: number = step) => dispatch("change", Math.max(Number(value) - customStep, min).toFixed(decimals))
-    // TODO: reset if not number....
+
     const input = (e: any) => {
         let inputValue = e.target.value || 0
-        inputValue = new Function(`return ${inputValue}`)() // calculate without eval()
+        try {
+            inputValue = new Function(`return ${inputValue}`)() // calculate without eval()
+        } catch (err) {
+            inputValue = value
+        }
 
         let newVaule = Math.max(Math.min(inputValue, max * inputMultiplier), min * inputMultiplier) / inputMultiplier
         dispatch("change", newVaule !== null ? newVaule.toFixed(decimals) : value)
     }
 
-    let timeout: any = null
-    let interval: any = null
+    let timeout: NodeJS.Timeout | null = null
+    let interval: NodeJS.Timeout | null = null
     function mousedown(e: any) {
         if (disableHold || !e.target.closest("button")) return
 
@@ -57,7 +62,11 @@
         }, 500)
     }
 
-    let nextScrollTimeout: any = null
+    onDestroy(() => {
+        if (interval) clearInterval(interval)
+    })
+
+    let nextScrollTimeout: NodeJS.Timeout | null = null
     function wheel(e: any) {
         if (disabled || nextScrollTimeout) return
         if (!e.ctrlKey && !e.metaKey) return
@@ -69,7 +78,7 @@
         else increment(stepAmount)
 
         // don't start timeout if scrolling with mouse
-        if (e.deltaY > 100 || e.deltaY < -100) return
+        if (e.deltaY >= 100 || e.deltaY <= -100) return
         nextScrollTimeout = setTimeout(() => {
             nextScrollTimeout = null
         }, 500)
@@ -78,8 +87,8 @@
 
 <svelte:window
     on:mouseup={() => {
-        clearTimeout(timeout)
-        clearInterval(interval)
+        if (timeout) clearTimeout(timeout)
+        if (interval) clearInterval(interval)
         timeout = null
         interval = null
     }}
@@ -87,15 +96,23 @@
 
 <span class="numberInput" {style} on:mousedown={mousedown} on:wheel={wheel} class:disabled class:outline>
     {#if buttons}
-        <Button id="decrement" on:click={(e) => decrement(e.ctrlKey || e.metaKey ? step * 10 : step)} center style={"flex: 1;"} disabled={disabled || Number(value) - step < min}>
+        <Button id="decrement" on:click={(e) => decrement(e.ctrlKey || e.metaKey ? step * 10 : step)} center style={"flex: 1;"} disabled={disabled || Number(value) <= min}>
             <Icon id="remove" size={1.2} white />
         </Button>
     {/if}
-    <span class="input" {title}>
+
+    <span class="input" data-title={title}>
         <TextInput {disabled} value={(value * inputMultiplier).toFixed(fixed)} on:change={input} center />
+
+        {#if visibleTitle}
+            <div class="title">
+                {title}
+            </div>
+        {/if}
     </span>
+
     {#if buttons}
-        <Button id="increment" on:click={(e) => increment(e.ctrlKey || e.metaKey ? step * 10 : step)} center style={"flex: 1;"} disabled={disabled || Number(value) + step > max}>
+        <Button id="increment" on:click={(e) => increment(e.ctrlKey || e.metaKey ? step * 10 : step)} center style={"flex: 1;"} disabled={disabled || Number(value) >= max}>
             <Icon id="add" size={1.2} white />
         </Button>
     {/if}
@@ -104,8 +121,9 @@
 <style>
     .numberInput {
         display: flex;
-        align-items: center;
-        background-color: var(--primary-darker);
+        /* align-items: center; */
+        background-color: var(--primary-darkest);
+        border-radius: 4px;
         flex-flow: wrap;
         transition: opacity 0.3s;
     }
@@ -125,9 +143,24 @@
         height: 100%;
         /* font-size: 1.5em; */
         /* font-weight: bold; */
+
+        position: relative;
     }
 
     .input :global(input) {
         padding: 5px;
+        background-color: var(--primary-darkest);
+        border-radius: 4px;
+    }
+
+    .title {
+        position: absolute;
+        bottom: -20px;
+        left: 50%;
+        transform: translateX(-50%);
+
+        font-size: 0.18em;
+
+        pointer-events: none;
     }
 </style>

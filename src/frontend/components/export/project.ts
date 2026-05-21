@@ -3,59 +3,174 @@
 
 import { get } from "svelte/store"
 import { EXPORT } from "../../../types/Channels"
+import type { Effects } from "../../../types/Effects"
 import type { Project, ProjectShowRef } from "../../../types/Projects"
-import { dataPath } from "../../stores"
+import type { Action, Overlays, Shows, SlideData } from "../../../types/Show"
+import { actions as actionsStores, effects as effectsStores, folders, media, overlays as overlayStores, showsCache, special } from "../../stores"
 import { send } from "../../utils/request"
 import { clone } from "../helpers/array"
 import { loadShows } from "../helpers/setShow"
-import { _show } from "../helpers/shows"
 import { formatToFileName } from "../helpers/show"
+import { _show } from "../helpers/shows"
 
-export async function exportProject(project: Project) {
-    let shows: any = {}
-    let missingMedia: string[] = []
-    // let media: any = {}
-    // let overlays: any = {}
+export async function exportProject(project: Project, projectId: string, savePath?: string) {
+    if (!project) return
 
+    const shows: Shows = {}
+    let files: string[] = []
+    const overlays: Overlays = {}
+    const effects: Effects = {}
+    const actions: { [key: string]: Action } = {}
+
+    // get project
     project = clone(project)
+    const parentFolder = get(folders)[project.parent]?.name || ""
+    if (projectId) project.id = projectId
+    project.parent = "/" // place on root
+    delete project.sourcePath
 
-    // place on root
-    project.parent = "/"
+    // project items
+    const getProjectItems = {
+        show: (showRef: ProjectShowRef) => {
+            shows[showRef.id] = clone(get(showsCache)[showRef.id])
 
-    let showIds = project.shows.filter((a) => !a.type || a.type === "show").map((a) => a.id)
+            const refs = _show(showRef.id).layouts().ref()
+            const mediaIds: string[] = []
+
+            refs.forEach((ref) => {
+                ref.forEach(({ data }: { data: SlideData }) => {
+                    // background
+                    const background = data.background
+                    if (background) mediaIds.push(background)
+
+                    // audio
+                    const audio = data.audio || []
+                    mediaIds.push(...audio)
+
+                    // overlays
+                    const overlayIds = data.overlays || []
+                    overlayIds.forEach(getOverlay)
+
+                    // actions
+                    const actionIds = data.actions?.slideActions || []
+                    actionIds.forEach((a) => getAction(a.id))
+                })
+            })
+
+            // get media file paths
+            const mediaData = _show(showRef.id).get("media") || {}
+            mediaIds.forEach((id) => {
+                const path = mediaData[id]?.path || mediaData[id]?.id
+                if (!path || path.startsWith("http")) return
+                getFile(path)
+            })
+
+            // get media from "Media" items
+            const slides = shows[showRef.id]?.slides || {}
+            Object.values(slides).forEach(({ items }) => {
+                items.forEach((item) => {
+                    if (item.type === "media") {
+                        getFile(item.src)
+                    }
+                })
+            })
+
+            // TODO: timers etc.
+        },
+        video: (showRef: ProjectShowRef) => getFile(showRef.id),
+        image: (showRef: ProjectShowRef) => getFile(showRef.id),
+        audio: (showRef: ProjectShowRef) => getFile(showRef.id),
+        ppt: (showRef: ProjectShowRef) => getFile(showRef.id),
+        pdf: (showRef: ProjectShowRef) => getFile(showRef.id),
+        overlay: (showRef: ProjectShowRef) => getOverlay(showRef.id),
+        effects: (showRef: ProjectShowRef) => getEffect(showRef.id),
+        player: () => {
+            // do nothing
+        },
+        section: () => {
+            // do nothing
+        }
+    }
+
+    const projectItems = project.shows
+
+    // load shows
+    const showIds = projectItems.filter((a) => (a.type || "show") === "show").map((a) => a.id)
     await loadShows(showIds)
 
-    await Promise.all(project.shows.map(getShow))
+    projectItems.map(getItem)
+
+    // remove duplicates
+    files = [...new Set(files)]
+
+    // set data
+    const projectData: any = { project, parentFolder, shows }
+    if (Object.keys(overlays).length) projectData.overlays = overlays
+    if (Object.keys(effects).length) projectData.effects = effects
+    if (Object.keys(actions).length) projectData.actions = actions
+    const includeMediaFiles = get(special).projectIncludeMedia ?? true
+    if (includeMediaFiles) {
+        projectData.files = files
+
+        const mediaData: any = {}
+        files.forEach((path) => {
+            if (!get(media)[path]) return
+
+            const data = clone(get(media)[path])
+
+            // delete data.info
+            delete data.creationTime // no need to transport this
+
+            mediaData[path] = data
+        })
+        if (Object.keys(mediaData).length) projectData.media = mediaData
+    }
 
     // export to file
-    send(EXPORT, ["GENERATE"], { type: "project", path: get(dataPath), name: formatToFileName(project.name), file: { project, shows } })
+    send(EXPORT, ["GENERATE"], { type: "project", name: formatToFileName(project.name), file: projectData, path: savePath })
 
-    async function getShow(showRef: ProjectShowRef) {
-        let type = showRef.type || "show"
-        // await loadShows(ids) ...
-        if (type === "show") {
-            shows[showRef.id] = _show(showRef.id).get()
-            // TODO: get media in shows
-            // TODO: get overlays in shows
-            // TODO: get audio in shows
-            // TODO: timers??
+    function getItem(showRef: ProjectShowRef) {
+        const type = showRef.type || "show"
+
+        if (!getProjectItems[type]) {
+            console.error("Missing project type:", type)
             return
         }
 
-        if (type === "player") return
-
-        // TODO: media files
-        // zip them ?
-
-        missingMedia.push(showRef.id)
-
-        // if (type === "image") {
-        //   let base64: any = await toDataURL(showRef.id)
-        //   console.log(base64)
-        //   media[showRef.id] = base64
-        //   return
-        // }
-
-        // video / audio
+        getProjectItems[type](showRef)
     }
+
+    function getFile(path: string | undefined) {
+        if (!path) return
+        files.push(path)
+    }
+
+    function getOverlay(id: string) {
+        if (!get(overlayStores)[id] || overlays[id]) return
+
+        overlays[id] = clone(get(overlayStores)[id])
+
+        // get media data from overlay "Media" items
+        get(overlayStores)[id].items?.forEach((item) => {
+            if (item.type === "media" && item.src) {
+                getFile(item.src)
+            }
+        })
+    }
+
+    function getEffect(id: string) {
+        if (!get(effectsStores)[id] || effects[id]) return
+
+        effects[id] = clone(get(effectsStores)[id])
+    }
+
+    function getAction(id: string) {
+        if (!get(actionsStores)[id] || actions[id]) return
+
+        actions[id] = clone(get(actionsStores)[id])
+    }
+
+    // store as base64 ?
+    // let base64 = await toDataURL(showRef.id)
+    // media[showRef.id] = base64
 }

@@ -1,3 +1,5 @@
+import type { Metadata } from "./Settings"
+
 export interface Categories {
     [key: string]: Category
 }
@@ -7,18 +9,31 @@ export interface Category {
     path?: string
     id?: string
     type?: "youtube" | "vimeo"
+    mediaType?: "background" | "foreground"
     url?: string
     default?: boolean
     description?: string
+    isArchive?: boolean
+    tags?: string[] // currently for player videos
+    metadata?: Metadata // show category
+    action?: string // trigger custom action on content presentation
+    template?: string // set a custom template all shows within this category will use by default (if no other template is set)
+    submenu?: { options: any[] } // open a submenu of options (tags)
+    openTrigger?: Function // trigger a custom function
 }
 
 export interface BibleCategories extends Category {
     customName?: string
     api?: boolean
-    books?: any[]
-    cacheUpdate?: Date
+    metadata?: { [key: string]: string } // metadata information
+    copyright?: string // API copyright information (should move to metadata)
+    attributionRequired?: boolean // API needs attribution
+    attributionString?: string // API needs custom attribution
+    favorite?: boolean // marked as favorite
     collection?: {
         versions: string[]
+        previewIndex?: number
+        offsets?: { [key: string]: number }
     }
 }
 
@@ -29,6 +44,7 @@ export interface TabsObj {
         disabled?: boolean
         remove?: boolean
         overflow?: boolean
+        tooltip?: string // custom tooltip
     }
 }
 
@@ -36,9 +52,12 @@ export interface DrawerTabs {
     [key: string]: {
         enabled: boolean
         activeSubTab: null | string
+        openedSubSubTab?: { [key: string]: string } // media "Online"/"Screens" sub tabs
+        openedSubmenus?: string[] // submenu (action tags) opened/closed state (contains activeSubTab ids)
+        activeSubmenu?: string // active submenu if any
     }
 }
 
-export type DrawerTabIds = "shows" | "media" | "overlays" | "audio" | "scripture" | "calendar" | "timers" | "templates" | "web"
-export type SettingsTabs = "general" | "theme" | "groups" | "styles" | "display_settings" | "actions" | "connection" | "cloud" | "calendar" | "other"
+export type DrawerTabIds = "shows" | "media" | "overlays" | "audio" | "scripture" | "calendar" | "timers" | "templates" | "functions"
+export type SettingsTabs = "general" | "files" | "display_settings" | "styles" | "connection" | "profiles" | "theme" | "other" // "calendar"
 export type TopViews = "show" | "edit" | "reflow" | "draw" | "stage" | "calendar" | "settings"

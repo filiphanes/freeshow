@@ -1,18 +1,19 @@
 <script lang="ts">
     import { onMount } from "svelte"
+    import type { Item } from "../../../../types/Show"
     import { activeEdit, activeShow, overlays, popupData, templates } from "../../../stores"
     import { history } from "../../helpers/history"
+    import { getLayoutRef } from "../../helpers/show"
     import { _show } from "../../helpers/shows"
-    import CombinedInput from "../../inputs/CombinedInput.svelte"
-    import NumberInput from "../../inputs/NumberInput.svelte"
+    import MaterialNumberInput from "../../inputs/MaterialNumberInput.svelte"
 
     let action = $popupData.action
     let type = $activeEdit.type
     let indexes: number[] = $activeEdit.items
 
-    let layoutRef: any[] = _show().layouts("active").ref()[0] || []
-    let slideRef: any = layoutRef[$activeEdit.slide!] || {}
-    let slideItems = _show().get("slides")?.[slideRef.id]?.items || []
+    let layoutRef = getLayoutRef()
+    let slideRef = layoutRef[$activeEdit.slide!] || {}
+    let slideItems: Item[] = _show().get("slides")?.[slideRef.id]?.items || []
 
     if ($activeEdit.id) getItems()
     function getItems() {
@@ -33,8 +34,8 @@
         value = e?.detail ?? e
         if (value) value = Number(value)
 
-        slideItems.forEach((_: any, i: number) => {
-            if (!indexes.includes(i)) return
+        slideItems.forEach((_, i: number) => {
+            if (!indexes.includes(i) || !slideItems[i]) return
 
             if (!slideItems[i].actions) slideItems[i].actions = {}
 
@@ -42,6 +43,7 @@
             else delete slideItems[i].actions[action]
         })
 
+        if (indexes.some((i) => !slideItems[i])) return
         let actions = indexes.map((i) => slideItems[i].actions)
 
         if (type === "overlay" || type === "template") {
@@ -49,7 +51,7 @@
                 id: "UPDATE",
                 oldData: { id: $activeEdit.id },
                 newData: { key: "items", subkey: "actions", data: actions, indexes },
-                location: { page: "edit", id: $activeEdit.type + "_items", override: "itemaction_" + indexes.join(",") },
+                location: { page: "edit", id: $activeEdit.type + "_items", override: "itemaction_" + indexes.join(",") }
             })
 
             return
@@ -58,11 +60,9 @@
         history({
             id: "setItems",
             newData: { style: { key: "actions", values: actions } },
-            location: { page: "edit", show: $activeShow!, slide: slideRef.id, items: indexes, override: "itemaction_" + slideRef.id + "_items_" + indexes.join(",") },
+            location: { page: "edit", show: $activeShow!, slide: slideRef.id, items: indexes, override: "itemaction_" + slideRef.id + "_items_" + indexes.join(",") }
         })
     }
 </script>
 
-<CombinedInput>
-    <NumberInput {value} on:change={updateValue} max={3600} fixed={value.toString().includes(".") ? 1 : 0} decimals={1} />
-</CombinedInput>
+<MaterialNumberInput label="timer.seconds" {value} max={3600} on:change={updateValue} />

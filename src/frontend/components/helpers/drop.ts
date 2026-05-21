@@ -1,63 +1,91 @@
 import { get } from "svelte/store"
-import { activePage, selected } from "../../stores"
+import type { History } from "../../../types/History"
+import { Main } from "../../../types/IPC/Main"
+import type { DropData, SelectIds } from "../../../types/Main"
+import type { ProjectShowRef } from "../../../types/Projects"
+import { requestMain } from "../../IPC/main"
+import { activePage, activeProject, projects, selected } from "../../stores"
 import { dropActions } from "./dropActions"
 import { history } from "./history"
+import { addToPos } from "./mover"
+import { deselect } from "./select"
+import { getFileName } from "./media"
 
-export type DropAreas = "all_slides" | "slides" | "slide" | "edit" | "shows" | "project" | "projects" | "overlays" | "templates" | "navigation"
+export type DropAreas = "all_slides" | "slides" | "slide" | "edit" | "shows" | "project" | "projects" | "overlays" | "templates" | "navigation" | "audio_playlist"
 
-const areas: { [key in DropAreas | string]: string[] } = {
+const areas = {
     all_slides: ["template"],
-    slides: ["media", "audio", "overlay", "sound", "screen", "camera", "microphone", "scripture", "trigger", "audio_stream", "show", "midi"], // group
+    slides: ["media", "audio", "audio_effect", "overlay", "sound", "effect", "screen", "ndi", "camera", "microphone", "scripture", "trigger", "category_audio", "audio_stream", "metronome", "show", "global_timer", "variable", "midi", "action"], // group
     // slide: ["overlay", "sound", "camera"], // "media",
     // projects: ["folder"],
-    project: ["show_drawer", "media", "audio", "player", "scripture"],
+    project: ["show_drawer", "media", "audio", "audio_effect", "overlay", "player", "scripture", "effect", "screen", "ndi", "camera"],
     overlays: ["slide"],
     templates: ["slide"],
-    edit: ["media"],
+    edit: ["media", "global_timer", "variable"]
     // media_drawer: ["file"],
 }
-const areaChildren: { [key in DropAreas | string]: string[] } = {
+const areaChildren = {
     projects: ["folder", "project"],
-    project: ["show", "media", "audio", "show_drawer", "player"],
-    slides: ["slide", "group", "global_group", "screen", "camera", "microphone", "media", "audio", "show"],
+    project: ["show", "media", "audio", "audio_effect", "show_drawer", "player", "action"],
+    slides: ["slide", "group", "global_group", "effect", "screen", "ndi", "camera", "microphone", "media", "audio", "audio_effect", "show"],
     all_slides: [],
-    navigation: ["show", "show_drawer", "media", "overlay", "template"],
+    navigation: ["show", "show_drawer", "media", "audio", "audio_effect", "overlay", "template"],
+    audio_playlist: ["audio"]
 }
 
-export function validateDrop(id: string, selected: any, children: boolean = false): boolean {
-    return areas[id]?.includes(selected) || (children && areaChildren[id]?.includes(selected))
+export function validateDrop(id: string, selectedId: SelectIds | null, children = false): boolean {
+    return areas[id]?.includes(selectedId) || (children && areaChildren[id]?.includes(selectedId))
 }
 
-export function ondrop(e: any, id: string) {
+export async function ondrop(e: any, id: string) {
     // let data: string = e.dataTransfer.getData("text")
-    let h: any = { id: null, location: { page: get(activePage) } }
-    let sel = get(selected)
+    const h = { id: null, location: { page: get(activePage) } }
+    const sel = get(selected)
 
-    let elem: any = null
+    let elem: HTMLElement | null = null
     if (e !== null) {
         // if (id === "project" || sel.id === "slide" || sel.id === "group" || sel.id === "global_group" || sel.id === "media") elem = e.target.closest(".selectElem")
-        if (id === "project" || id === "projects" || id === "slides" || id === "all_slides" || id === "navigation") elem = e.target.closest(".selectElem")
+        if (id === "project" || id === "projects" || id === "slides" || id === "all_slides" || id === "navigation" || id === "templates" || id === "audio_playlist") elem = e.target.closest(".selectElem")
         else if (id === "slide") elem = e.target.querySelector(".selectElem")
     }
 
-    let trigger: undefined | string = e?.target.closest(".TriggerBlock")?.id
-    let data: any = JSON.parse(elem?.getAttribute("data") || "{}")
+    const trigger: undefined | string = e?.target.closest(".TriggerBlock")?.id
+    const data: any = JSON.parse(elem?.getAttribute("data-item") || "{}")
     let index: undefined | number = data.index
-    let center: boolean = false
+    let center = false
     if (trigger?.includes("center")) center = true
     if (index !== undefined && trigger?.includes("end") && areaChildren[id]?.includes(sel.id || "")) index++
 
-    console.log("DRAG: ", sel)
-    console.log("DROP: ", id, data, trigger, center, index)
+    const dropdata: DropData = { id, data, trigger, center, index }
+
+    console.info("DRAG: ", sel)
+    console.info("DROP: ", dropdata)
+
+    const keys = { shiftKey: e?.shiftKey, ctrlKey: e?.ctrlKey || e?.metaKey, altKey: e?.altKey }
 
     if (dropActions[id]) {
-        let dropData: any = { drag: sel, drop: { id, data, trigger, center, index } }
+        const dropData = { drag: sel, drop: dropdata }
 
-        h = dropActions[id](dropData, h)
-        if (h && h.id) history(h)
-        selected.set({ id: null, data: [] })
+        const hist = (await dropActions[id](dropData, h, keys)) as History | undefined
+        if (hist && hist.id) history(hist)
+        deselect()
         return
     }
 
-    console.log("NOT ASSIGNED!", sel.id + " => " + id)
+    console.info("NOT ASSIGNED!", sel.id + " => " + id)
+}
+
+export async function projectDropFolders(filePaths: string[], index = -1) {
+    const stats = await Promise.all(filePaths.map(async (path) => await requestMain(Main.FILE_INFO, path)))
+    const folders = stats.filter((a) => a?.folder)
+    if (!folders.length) return
+
+    const projectId = get(activeProject)
+    if (!projectId) return
+
+    const currentProjectItems = get(projects)[projectId]?.shows || []
+    const newProjectItems: ProjectShowRef[] = folders.map((a) => ({ type: "folder", id: a!.path, name: getFileName(a!.path) }))
+
+    const data = addToPos(currentProjectItems, newProjectItems, index < 0 ? currentProjectItems.length : index)
+    history({ id: "UPDATE", newData: { key: "shows", data }, oldData: { id: projectId }, location: { page: "show", id: "project_ref" } })
 }

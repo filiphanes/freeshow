@@ -1,20 +1,20 @@
 <script lang="ts">
-    import { onDestroy } from "svelte"
-    import { MAIN } from "../../../../types/Channels"
+    import { onMount } from "svelte"
+    import { Main } from "../../../../types/IPC/Main"
+    import { requestMain } from "../../../IPC/main"
     import { outLocked, outputs } from "../../../stores"
-    import { destroy, receive, send } from "../../../utils/request"
-    import { getActiveOutputs, setOutput } from "../../helpers/output"
+    import { getFirstActiveOutput, setOutput } from "../../helpers/output"
+    import { clearBackground } from "../../output/clear"
     import Capture from "./Capture.svelte"
 
-    let screens: any[] = []
-    export let streams: any[]
-    send(MAIN, ["GET_SCREENS"])
-    receive(MAIN, { GET_SCREENS: (d: any) => (screens = d) }, "GET_SCREENS")
-    onDestroy(() => destroy(MAIN, "GET_SCREENS"))
+    let screens: { name: string; id: string }[] = []
+    export let streams: MediaStream[]
 
-    $: currentOutput = $outputs[getActiveOutputs()[0]]
+    onMount(async () => {
+        screens = (await requestMain(Main.GET_SCREENS)) || []
+    })
 
-    $: console.log(screens)
+    $: currentOutput = getFirstActiveOutput($outputs)
 </script>
 
 {#each screens as screen}
@@ -23,7 +23,7 @@
         {screen}
         on:click={(e) => {
             if ($outLocked || e.ctrlKey || e.metaKey) return
-            if (currentOutput.out?.background?.id === screen.id) setOutput("background", null)
+            if (currentOutput?.out?.background?.id === screen.id) clearBackground()
             else setOutput("background", { id: screen.id, type: "screen" })
         }}
     />

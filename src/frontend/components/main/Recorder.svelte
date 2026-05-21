@@ -5,17 +5,23 @@
 
     $: if ($activeRecording !== undefined) toggleRecording()
 
+    let recorderActive = false
+
     let videoElem
     let currentStream
     function toggleRecording() {
-        if (!videoElem) return
         if (!$activeRecording) {
             currentStream?.getTracks().forEach((track) => {
                 track.stop()
             })
-            videoElem.srcObject = null
+
+            if (videoElem) videoElem.srcObject = null
+            recorderActive = false
+
             return
         }
+
+        recorderActive = true
 
         let options = clone($activeRecording)
         // https://stackoverflow.com/questions/27420581/get-maximum-video-resolution-with-getusermedia
@@ -29,6 +35,8 @@
             .getUserMedia(options)
             .then((stream) => {
                 if (!stream) return console.error("Error getting media stream!")
+                if (!videoElem) return
+
                 currentStream = stream
 
                 currentRecordingStream.set(stream)
@@ -37,17 +45,19 @@
                 createMediaRecorder(stream)
             })
             .catch(function (err) {
-                console.log(err.name + ": " + err.message)
+                console.error(err.name + ": " + err.message)
             })
     }
 </script>
 
-<video bind:this={videoElem}>
-    <track kind="captions" />
-</video>
+{#if recorderActive}
+    <video class="recorder" bind:this={videoElem} muted>
+        <track kind="captions" />
+    </video>
+{/if}
 
 <style>
-    video {
+    video.recorder {
         position: fixed;
         opacity: 0;
         pointer-events: none;

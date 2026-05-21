@@ -1,23 +1,33 @@
 <script lang="ts">
-    import { activeEdit, activeShow, cachedShowsData, showsCache } from "../../stores"
+    import { onMount } from "svelte"
+    import { activeEdit, activeShow, cachedShowsData, editColumns, showsCache } from "../../stores"
     import T from "../helpers/T.svelte"
     import { findMatchingOut } from "../helpers/output"
+    import { getShowCacheId } from "../helpers/show"
     import Slide from "../slide/Slide.svelte"
     import Autoscroll from "../system/Autoscroll.svelte"
     import Center from "../system/Center.svelte"
     import DropArea from "../system/DropArea.svelte"
+    import SkeletonSlide from "../slide/SkeletonSlide.svelte"
 
-    $: showId = $activeShow?.id || ""
+    $: showId = $activeShow?.id || $activeEdit.showId || ""
     $: currentShow = $showsCache[showId]
-    $: layoutSlides = $cachedShowsData[showId]?.layout || []
+    $: layoutSlides = $cachedShowsData[getShowCacheId(showId, currentShow)]?.layout || []
 
-    function keydown(e: any) {
+    let hasMounted = false
+    onMount(() => {
+        // don't double render all slides on first load because of cachedShowsData update
+        setTimeout(() => (hasMounted = true), 80)
+    })
+
+    function keydown(e: KeyboardEvent) {
         if (e.altKey) {
             e.preventDefault()
             altKeyPressed = true
         }
 
-        if (e.target instanceof HTMLTextAreaElement || e.target.closest(".edit")) return
+        if (e.target instanceof HTMLTextAreaElement || e.target?.closest(".edit")) return
+        if ($activeEdit.items.length) return
 
         if (e.key === "ArrowDown") {
             // Arrow Down
@@ -25,9 +35,9 @@
             ;(document.activeElement as any)?.blur()
 
             if ($activeEdit.slide === null || $activeEdit.slide === undefined) {
-                activeEdit.set({ slide: 0, items: [] })
+                activeEdit.set({ slide: 0, items: [], showId })
             } else if ($activeEdit.slide < layoutSlides.length - 1) {
-                activeEdit.set({ slide: $activeEdit.slide + 1, items: [] })
+                activeEdit.set({ slide: $activeEdit.slide + 1, items: [], showId })
             }
         } else if (e.key === "ArrowUp") {
             // Arrow Up
@@ -35,54 +45,64 @@
             ;(document.activeElement as any)?.blur()
 
             if ($activeEdit.slide === null || $activeEdit.slide === undefined) {
-                activeEdit.set({ slide: layoutSlides.length - 1, items: [] })
+                activeEdit.set({ slide: layoutSlides.length - 1, items: [], showId })
             } else if ($activeEdit.slide > 0) {
-                activeEdit.set({ slide: $activeEdit.slide - 1, items: [] })
+                activeEdit.set({ slide: $activeEdit.slide - 1, items: [], showId })
             }
         }
     }
 
-    let scrollElem: any
-    let offset: number = -1
-    $: {
-        if (loaded && $activeEdit.slide !== null && $activeEdit.slide !== undefined) {
-            let index = $activeEdit.slide - 1
-            setTimeout(() => {
-                if (index >= 0 && scrollElem) offset = scrollElem.querySelector(".grid")?.children?.[index]?.offsetTop || 5 - 5
-            }, 10)
-        }
+    let skipScrolling = false
+    let scrollElem: HTMLElement | undefined
+    let offset = -1
+    $: if ($activeEdit.slide !== null && $activeEdit.slide !== undefined) updateScroll()
+    function updateScroll() {
+        if (skipScrolling) return
+
+        let index = $activeEdit.slide! - 1
+        setTimeout(() => {
+            if (index >= 0 && scrollElem) offset = (scrollElem.querySelector(".grid")?.children?.[index] as HTMLElement)?.offsetTop || 5 - 5
+        }, 10)
+
+        // WIP scroll on click if not 100% visible (Intersection Observer?)
     }
 
-    let columns: number = 1
-
-    let nextScrollTimeout: any = null
+    let nextScrollTimeout: NodeJS.Timeout | null = null
     function wheel(e: any) {
         if (!e.ctrlKey && !e.metaKey) return
         if (nextScrollTimeout) return
 
         e.preventDefault()
-        columns = Math.max(1, Math.min(4, columns + (e.deltaY < 0 ? -1 : 1)))
+        editColumns.set(Math.max(1, Math.min(4, $editColumns + (e.deltaY < 0 ? -1 : 1))))
 
         // don't start timeout if scrolling with mouse
-        if (e.deltaY > 100 || e.deltaY < -100) return
+        if (e.deltaY >= 100 || e.deltaY <= -100) return
         nextScrollTimeout = setTimeout(() => {
             nextScrollTimeout = null
         }, 500)
     }
 
-    let altKeyPressed: boolean = false
+    let altKeyPressed = false
     function keyup() {
         altKeyPressed = false
     }
 
+    function slideClick(e: any, index: number) {
+        if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            activeEdit.set({ slide: index, items: [], showId })
+            skipScrolling = true
+            setTimeout(() => (skipScrolling = false), 10)
+        }
+    }
+
     // lazy loader
 
-    let lazyLoader: number = 1
-    let timeout: any = null
-    let loaded: boolean = false
+    let lazyLoader = 1
+    let timeout: NodeJS.Timeout | null = null
+    let loaded = false
 
     // reset loading when changing view modes
-    $: if ($activeShow?.id) loaded = false
+    $: if (showId) loaded = false
 
     $: if (!loaded && !lazyLoading && layoutSlides?.length) {
         lazyLoading = true
@@ -90,7 +110,7 @@
         startLazyLoader()
     }
 
-    let lazyLoading: boolean = false
+    let lazyLoading = false
     function startLazyLoader() {
         if (!layoutSlides) return
         if (lazyLoader >= layoutSlides.length) {
@@ -115,25 +135,17 @@
             {#if layoutSlides.length}
                 <div class="grid" on:wheel={wheel}>
                     {#each layoutSlides as slide, i}
-                        {#if (loaded || i < lazyLoader) && currentShow?.slides?.[slide.id]}
-                            <Slide
-                                slide={currentShow.slides[slide.id]}
-                                show={currentShow}
-                                layoutSlide={slide}
-                                {layoutSlides}
-                                index={i}
-                                color={slide.color}
-                                active={findMatchingOut(slide.id) !== null}
-                                focused={$activeEdit.slide === i}
-                                noQuickEdit
-                                {altKeyPressed}
-                                {columns}
-                                on:click={(e) => {
-                                    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) activeEdit.set({ slide: i, items: [] })
-                                }}
-                            />
+                        {@const currentSlide = currentShow?.slides?.[slide.id]}
+                        {#if hasMounted && (loaded || i < lazyLoader)}
+                            {#if currentSlide}
+                                <Slide {showId} slide={currentSlide} show={currentShow} layoutSlide={slide} {layoutSlides} index={i} color={slide.color} active={findMatchingOut(slide.id) !== null} focused={$activeEdit.slide === i} noQuickEdit {altKeyPressed} columns={$editColumns} on:click={(e) => slideClick(e, i)} />
+                            {/if}
+                        {:else}
+                            <SkeletonSlide slide={currentSlide} index={i} color={slide.color} columns={$editColumns} active={$activeEdit.slide === i} on:click={(e) => slideClick(e, i)} />
                         {/if}
                     {/each}
+
+                    <div class="padding" style="height: 60px;width: 1px;"></div>
                 </div>
             {:else}
                 <Center faded>

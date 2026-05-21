@@ -1,17 +1,57 @@
 <script lang="ts">
     import { io } from "socket.io-client"
-    import Icon from "./helpers/Icon.svelte"
+    import Icon from "../common/components/Icon.svelte"
+
     let socket = io()
 
     console.log(socket)
 
-    // socket.on("connect", () => {
-    //   id = socket.id
-    // })
+    let outputId: string = ""
+
+    socket.on("connect", () => {
+        // id = socket.id
+        socket.emit("CONTROLLER", { channel: "GET_OUTPUT_ID" })
+    })
+
+    let aspectRatio = 16 / 9
+    let thumbnailBackground: string = ""
+
+    socket.on("CONTROLLER", (msg) => {
+        if (msg.channel !== "OUTPUT_FRAME") console.log("MESSAGE:", msg)
+        switch (msg.channel) {
+            case "OUTPUT_FRAME":
+                thumbnailBackground = msg.data.frame || ""
+                if (msg.data.width && msg.data.height) aspectRatio = msg.data.width / msg.data.height
+                frameReceived = true
+                break
+            case "GET_OUTPUT_ID":
+                outputId = msg.data
+                break
+        }
+    })
+
+    let thumbnailInterval: any = null
+    let frameReceived = true
+    $: if (draw && !thumbnailInterval) thumbnailInterval = setInterval(requestThumbnail, 800)
+    else if (thumbnailInterval) clearInterval(thumbnailInterval)
+    function requestThumbnail() {
+        if (!outputId || !frameReceived) return
+        frameReceived = false
+        socket.emit("CONTROLLER", { channel: "OUTPUT_FRAME", data: { outputId } })
+    }
 
     function sendAction(id: string) {
         socket.emit("CONTROLLER", { channel: "ACTION", data: { id } })
+
+        if (justCleared) {
+            clearTimeout(justCleared)
+            justCleared = null
+        } else if (id === "clear") {
+            justCleared = setTimeout(() => (justCleared = null), 2000)
+        }
     }
+
+    let justCleared: any = null
 
     let draw = false
     let mouseDown = false
@@ -22,15 +62,18 @@
         if (!mouseDown) return
         mouseDown = false
 
+        let data: any = { offset: null }
+        if (tool === "Zoom") data.tool = null
+
         socket.emit("CONTROLLER", {
             channel: "FOCUS",
-            data: { offset: null },
+            data
         })
     }
 
-    let padElem: any = null
+    let padElem: HTMLElement | undefined
     function mousemove(e: any) {
-        if (!mouseDown) return
+        if (!mouseDown || !padElem) return
 
         var elemRect = padElem.getBoundingClientRect()
         var x = (e.pageX ?? e.targetTouches[0].pageX) - elemRect.left
@@ -39,23 +82,23 @@
         let offset = { x: x / elemRect.width, y: y / elemRect.height }
         offset = {
             x: Math.max(0, Math.min(offset.x, 1)),
-            y: Math.max(0, Math.min(offset.y, 1)),
+            y: Math.max(0, Math.min(offset.y, 1))
         }
 
         socket.emit("CONTROLLER", {
             channel: "FOCUS",
-            data: { offset, tool: tool.toLowerCase() },
+            data: { offset, tool: tool.toLowerCase() }
         })
     }
 
-    const tools: string[] = ["Focus", "Pointer", "Particles"]
+    const tools: string[] = ["Focus", "Pointer", "Zoom", "Particles", "Paint"]
     let tool = "Focus"
     function changeTool(e: any) {
         tool = e.target.value
     }
 
     // keyboard shortcuts
-    function keydown(e: any) {
+    function keydown(e: KeyboardEvent) {
         if ([" ", "Arrow", "Page"].includes(e.key)) e.preventDefault()
 
         if ([" ", "ArrowRight", "PageDown"].includes(e.key)) sendAction("next")
@@ -68,12 +111,26 @@
 
 {#if draw}
     <div class="draw">
-        <select name="tools" on:change={changeTool}>
-            {#each tools as tool}
-                <option value={tool}>{tool}</option>
+        <select name="tools" value={tool} on:change={changeTool}>
+            {#each tools as toolKey}
+                <option value={toolKey}>{toolKey}</option>
             {/each}
         </select>
-        <div bind:this={padElem} class="pad" on:mousedown={mousedown} on:touchstart={mousedown} />
+
+        <div bind:this={padElem} class="pad" style="aspect-ratio: {thumbnailBackground ? aspectRatio : 1};" on:mousedown={mousedown} on:touchstart={mousedown}>
+            {#if thumbnailBackground}
+                <div class="thumbnail">
+                    <!-- object-fit: {thumbnailBackground.mediaStyle?.fit || 'contain'}; -->
+                    <img src={thumbnailBackground} alt="" style="width: 100%;height: 100%;object-fit: fill;opacity: 0.5;" />
+                </div>
+            {/if}
+        </div>
+
+        {#if tool === "Paint"}
+            <button on:click={() => sendAction("clear_painting")} title="Clear painting">
+                <Icon id="clear" size={2} white right />
+            </button>
+        {/if}
     </div>
 {:else}
     <div class="controller">
@@ -85,17 +142,18 @@
         </button>
         <!-- <button class="quart" />
   <button class="quart" /> -->
-        <button class="center" on:click={() => sendAction("clear")}>
+        <button class="center" class:red={justCleared} on:click={() => sendAction("clear")}>
             <Icon id="clear" size={4} white />
+            <!-- <Icon id={justCleared ? "clear" : "slide"} size={4} white /> -->
         </button>
     </div>
 {/if}
 
 <div class="toggles">
-    <button on:click={() => (draw = false)} style={draw ? "background-color: var(--primary-darker);" : ""}>
+    <button on:click={() => (draw = false)} class="noright" style={draw ? "background-color: var(--primary-darker);" : ""}>
         <Icon id="pad" size={2.5} white={draw === true} />
     </button>
-    <button on:click={() => (draw = true)} style={draw ? "" : "background-color: var(--primary-darker);"}>
+    <button on:click={() => (draw = true)} class="noleft" style={draw ? "" : "background-color: var(--primary-darker);"}>
         <Icon id="draw" size={2.5} white={draw === false} />
     </button>
 </div>
@@ -130,8 +188,8 @@
     }
 
     :root {
-        --primary: #292c36;
-        --primary-lighter: #363945;
+        --primary: #242832;
+        --primary-lighter: #2f3542;
         --primary-darker: #191923;
         --primary-darkest: #12121c;
         --text: #f0f0ff;
@@ -146,6 +204,10 @@
 
         /* --navigation-width: 18vw; */
         --navigation-width: 300px;
+    }
+
+    :global(svg.white) {
+        fill: var(--text) !important;
     }
 
     /* toggle */
@@ -177,6 +239,15 @@
         font-weight: bold;
     }
 
+    .toggles .noleft {
+        border-top-left-radius: 0;
+        border-bottom-left-radius: 0;
+    }
+    .toggles .noright {
+        border-top-right-radius: 0;
+        border-bottom-right-radius: 0;
+    }
+
     /* pad */
     .draw {
         position: absolute;
@@ -185,15 +256,28 @@
         transform: translate(-50%, -50%);
         display: flex;
         flex-direction: column;
+        align-items: center;
         gap: 10px;
     }
 
     .pad {
-        height: 80vw;
-        width: 80vw;
+        height: 55vw;
+        /* width: 80vw; */
         border-radius: 5px;
         background-color: var(--primary-darkest);
         touch-action: none;
+        align-self: center;
+
+        position: relative;
+    }
+
+    .thumbnail {
+        pointer-events: none;
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
     }
 
     /* controller */
@@ -209,10 +293,40 @@
         border-radius: 50%;
         overflow: hidden;
     }
-    @media only screen and (min-width: 600px) {
+
+    @media only screen and (min-width: 800px) {
         .controller {
-            height: 80vh;
-            width: 80vh;
+            height: 70vh;
+            width: 70vh;
+        }
+    }
+    @media only screen and (min-width: 620px) {
+        .pad {
+            height: 55vh;
+            /* width: 55vh; */
+        }
+    }
+    /* (orientation: landscape) */
+    @media (min-width: 600px) and (max-height: 700px) {
+        .controller {
+            top: 45%;
+            height: 70vh;
+            width: 70vh;
+        }
+        .draw {
+            top: 45%;
+        }
+        .pad {
+            height: 45vh;
+            /* width: 65vh; */
+        }
+        .toggles {
+            bottom: 20px;
+            height: 30px;
+            width: 60vw;
+        }
+        .toggles :global(svg) {
+            height: 1.5rem;
         }
     }
 
@@ -226,7 +340,7 @@
     .quart:nth-child(1) {
         top: 0;
         left: 0;
-        border-right: 5px solid var(--primary);
+        border-inline-end: 5px solid var(--primary);
     }
     .quart:nth-child(1) :global(svg) {
         transform: translate(-40%);
@@ -234,7 +348,7 @@
     .quart:nth-child(2) {
         top: 0;
         left: 50%;
-        border-left: 5px solid var(--primary);
+        border-inline-start: 5px solid var(--primary);
     }
     .quart:nth-child(2) :global(svg) {
         transform: translate(40%);
@@ -252,18 +366,30 @@
         width: 40%;
         position: absolute;
         top: 30%;
-        left: 30%;
+        inset-inline-start: 30%;
         border-radius: 50%;
         text-align: center;
         border: 10px solid var(--primary);
     }
 
     button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
         border: none;
         cursor: pointer;
+        padding: 5px;
+        border-radius: 5px;
         background-color: var(--primary-darkest);
+
+        transition: background-color 0.1s;
     }
     button:active {
         background: var(--primary-lighter);
+    }
+
+    button.red {
+        background-color: #4d0d15;
     }
 </style>

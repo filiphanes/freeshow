@@ -1,21 +1,15 @@
 <script lang="ts">
-    import { uid } from "uid"
-    import { OUTPUT } from "../../../../types/Channels"
-    import { activeStage, outputs, special, stageShows } from "../../../stores"
-    import { send } from "../../../utils/request"
+    import { activeStage, outputs, stageShows } from "../../../stores"
+    import { translateText } from "../../../utils/language"
     import Icon from "../../helpers/Icon.svelte"
-    import T from "../../helpers/T.svelte"
-    import { keysToID } from "../../helpers/array"
+    import { keysToID, sortByName } from "../../helpers/array"
     import { history } from "../../helpers/history"
-    import { getActiveOutputs } from "../../helpers/output"
-    import Button from "../../inputs/Button.svelte"
-    import Checkbox from "../../inputs/Checkbox.svelte"
-    import Color from "../../inputs/Color.svelte"
-    import CombinedInput from "../../inputs/CombinedInput.svelte"
-    import Dropdown from "../../inputs/Dropdown.svelte"
+    import MaterialCheckbox from "../../inputs/MaterialCheckbox.svelte"
+    import MaterialColorInput from "../../inputs/MaterialColorInput.svelte"
+    import MaterialDropdown from "../../inputs/MaterialDropdown.svelte"
 
     $: currentStage = $stageShows[$activeStage.id || ""]
-    $: settings = currentStage.settings
+    $: settings = currentStage?.settings || {}
 
     function updateStageSettings(e: any, key: string) {
         let value = e.target?.value || e
@@ -24,176 +18,65 @@
         history({ id: "UPDATE", newData: { data: value, key: "settings", subkey: key }, oldData: { id: $activeStage.id }, location: { page: "stage", id: "stage" } })
     }
 
-    function toggleValue(e: any, key: string) {
-        let value = e.target.checked
-        updateStageSettings(value, key)
-
-        if (!$activeStage.id) return
-
-        // add / remove physical stage output
-        if (key === "outputScreen") {
-            let outputIds = getActiveOutputs()
-            let bounds = $outputs[outputIds[0]]?.bounds || { x: 0, y: 0, width: 100, height: 100 }
-
-            outputs.update((a) => {
-                if (value) {
-                    let id = uid()
-                    a[id] = {
-                        enabled: true,
-                        active: true,
-                        stageOutput: $activeStage.id!,
-                        name: currentStage.name,
-                        color: "#555555",
-                        bounds,
-                        screen: null,
-                    }
-
-                    send(OUTPUT, ["CREATE"], { ...a[id], id, rate: $special.previewRate || "auto" })
-                } else {
-                    // WIP: remove alpha key outputs...
-                    let outputWithStageId = keysToID(a).find((output) => output.stageOutput === $activeStage.id)?.id
-                    if (outputWithStageId) delete a[outputWithStageId]
-
-                    send(OUTPUT, ["REMOVE"], { id: outputWithStageId })
-                }
-
-                return a
-            })
-        }
-    }
-
-    // VALUES
-
-    const defaultSettings = {
-        output: "—",
-        background: false,
-        color: "#000000",
-        resolution: false,
-        size: { width: 10, height: 20 },
-        labels: false,
-        showLabelIfEmptySlide: true,
-    }
-
-    // resolution ?
-    // show labels
+    // add?:
     // flash on update
-    // stage notes/message
     // password
 
-    let outputList: any[] = []
-    $: outputList = Object.entries($outputs)
-        .map(([id, a]) => ({ id, ...a }))
-        .filter((a) => !a.isKeyOutput && !a.stageOutput)
-        .sort((a, b) => a.name.localeCompare(b.name))
-
-    function reset() {
-        history({ id: "UPDATE", newData: { data: { color: "#000000" }, key: "settings" }, oldData: { id: $activeStage.id }, location: { page: "stage", id: "stage" } })
-    }
+    $: outputsList = sortByName(keysToID($outputs).filter((a) => !a.stageOutput)).map((a) => ({ value: a.id, label: a.name }))
 </script>
 
-<div class="section">
-    <CombinedInput>
-        <p><T id="midi.output" /></p>
-        <Dropdown
-            style="width: 100%;"
-            options={[{ id: "", name: "—" }, ...outputList]}
-            value={$outputs[settings.output || ""] ? $outputs[settings.output || ""].name : defaultSettings.output}
-            on:click={(e) => updateStageSettings(e.detail.id, "output")}
-        />
-    </CombinedInput>
-    <CombinedInput>
-        <p><T id="settings.output_screen" /></p>
-        <div class="alignRight">
-            <Checkbox checked={settings.outputScreen} on:change={(e) => toggleValue(e, "outputScreen")} />
+<div class="tools">
+    <div>
+        <MaterialDropdown label="stage.source_output" options={outputsList} value={settings.output || ""} on:change={(e) => updateStageSettings(e.detail, "output")} allowEmpty />
+    </div>
+
+    <div>
+        <div class="title">
+            <span style="display: flex;gap: 8px;align-items: center;padding: 8px 12px;">
+                <Icon id="style" white />
+                <p>{translateText("edit.style")}</p>
+            </span>
         </div>
-    </CombinedInput>
 
-    <h6><T id="edit.style" /></h6>
-    <CombinedInput>
-        <p><T id="edit.background_color" /></p>
-        <Color value={settings.color || defaultSettings.color} on:input={(e) => updateStageSettings(e.detail, "color")} />
-    </CombinedInput>
-    <CombinedInput>
-        <p><T id="stage.auto_stretch" /></p>
-        <div class="alignRight">
-            <Checkbox checked={settings.autoStretch ?? true} on:change={(e) => toggleValue(e, "autoStretch")} />
-        </div>
-    </CombinedInput>
+        <MaterialColorInput label="edit.background_color" value={settings.color || "#000000"} defaultValue="#000000" on:input={(e) => updateStageSettings(e.detail, "color")} />
 
-    <!-- <h6><T id="settings.resolution" /></h6>
-  <CombinedInput>
-      <p><T id="edit.width" /></p>
-      <NumberInput
-          value={settings.resolution.width}
-          max={100000}
-          on:change={(e) => {
-              settings.resolution.width = Number(e.detail)
-              update()
-          }}
-      />
-  </CombinedInput>
-  <CombinedInput>
-      <p><T id="edit.height" /></p>
-      <NumberInput
-          value={settings.resolution.height}
-          max={100000}
-          on:change={(e) => {
-              settings.resolution.height = Number(e.detail)
-              update()
-          }}
-      />
-  </CombinedInput>
-
-  <h6><T id="tools.notes" /></h6>
-  <div class="notes">
-      <Notes value={note} on:edit={edit} />
-  </div> -->
+        <MaterialCheckbox label="stage.labels" checked={settings.labels} on:change={(e) => updateStageSettings(e.detail, "labels")} />
+        {#if settings.labels}
+            <MaterialColorInput label="stage.label_color" value={settings.labelColor || "#ac9c35"} defaultValue={"#ac9c35"} on:input={(e) => updateStageSettings(e.detail, "labelColor")} />
+        {/if}
+    </div>
 </div>
 
-<div class="bottom">
-    <Button style="flex: 1;" on:click={reset} dark center>
-        <Icon id="reset" right />
-        <T id={"actions.reset"} />
-    </Button>
-</div>
-
-<!-- <EditValues edits={textEdits} styles={data} {item} on:change={updateStyle} /> -->
+<!-- probably not needed -->
+<!-- <CombinedInput>
+    <p><T id="stage.auto_stretch" /></p>
+    <div class="alignRight">
+        <Checkbox checked={settings.autoStretch ?? true} on:change={(e) => toggleValue(e, "autoStretch")} />
+    </div>
+</CombinedInput> -->
 
 <style>
-    .section {
+    .tools {
+        padding: 8px 5px;
+
         display: flex;
         flex-direction: column;
-        margin: 10px;
-        margin-bottom: 40px;
+        gap: 5px;
     }
 
-    h6 {
-        color: var(--text);
-        text-transform: uppercase;
-        text-align: center;
-        font-size: 0.9em;
-        margin: 20px 0;
-    }
+    /* title */
 
-    p {
+    .title {
+        background-color: var(--primary-darker);
+        border-bottom: 1px solid var(--primary-lighter);
+
+        border-top-left-radius: 10px;
+        border-top-right-radius: 10px;
+        overflow: hidden;
+    }
+    .title p {
+        font-weight: 500;
+        font-size: 0.8rem;
         opacity: 0.8;
-        font-size: 0.9em;
-    }
-
-    /* .notes :global(div) {
-        display: block !important;
-    }
-
-    .notes :global(div.paper) {
-        position: relative;
-        display: block;
-        background: var(--primary-darker);
-    } */
-
-    .bottom {
-        display: flex;
-        position: absolute;
-        bottom: 0;
-        width: 100%;
     }
 </style>

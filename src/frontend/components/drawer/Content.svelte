@@ -1,30 +1,38 @@
 <script lang="ts">
     import { drawerTabsData } from "../../stores"
-    import Calendar from "../calendar/Calendar.svelte"
-    import Overlays from "./Overlays.svelte"
-    import Shows from "./Shows.svelte"
-    import Templates from "./Templates.svelte"
-    import Triggers from "./Triggers.svelte"
-    import Variables from "./Variables.svelte"
+    import T from "../helpers/T.svelte"
+    import MaterialButton from "../inputs/MaterialButton.svelte"
     import Audio from "./audio/Audio.svelte"
     import Scripture from "./bible/Scripture.svelte"
-    import Effects from "./effects/Effects.svelte"
+    import Calendar from "./calendar/Calendar.svelte"
     import Media from "./media/Media.svelte"
+    import Actions from "./pages/Actions.svelte"
+    import OBS from "./pages/OBS.svelte"
+    import Overlays from "./pages/Overlays.svelte"
+    import Shows from "./pages/Shows.svelte"
+    import Templates from "./pages/Templates.svelte"
+    import Triggers from "./pages/Triggers.svelte"
+    import Variables from "./pages/Variables.svelte"
     import Timers from "./timers/Timers.svelte"
 
     export let id: string
-    export let bibles: any
     export let searchValue: string
     export let firstMatch: null | string
     $: active = $drawerTabsData[id]?.activeSubTab || null
 
-    let streams: any = []
+    // search active warning
+    let searchTab: string | null = null
+    $: if (searchValue) updateTab()
+    function updateTab() {
+        searchTab = id + active
+    }
+
+    let streams: MediaStream[] = []
     $: if (id !== "media" || active) stopStreams()
 
     function stopStreams() {
-        streams.forEach((stream: any) => {
-            stream.getTracks().forEach((track: any) => {
-                console.log(track)
+        streams.forEach((stream) => {
+            stream.getTracks().forEach((track) => {
                 track.enabled = false
                 track.stop()
             })
@@ -33,43 +41,60 @@
 </script>
 
 <div class="main">
+    {#if searchValue && active !== "all" && searchTab !== id + active && id !== "scripture"}
+        <div class="warning">
+            <p style="padding: 6px 8px;"><T id="main.search_active" />: <span style="color: var(--secondary);font-weight: bold;">{searchValue}</span></p>
+            <MaterialButton icon="close" style="padding: 6px 16px;" on:click={() => (searchValue = "")}>
+                <p><T id="clear.search" /></p>
+            </MaterialButton>
+        </div>
+    {/if}
+
     {#if id === "shows"}
-        <Shows {id} {active} {searchValue} bind:firstMatch />
+        <Shows {active} {searchValue} bind:firstMatch />
     {:else if id === "media"}
         <Media {active} {searchValue} bind:streams />
+    {:else if id === "audio"}
+        <Audio {active} {searchValue} />
     {:else if id === "overlays"}
-        {#if active === "variables"}
+        <Overlays {active} {searchValue} />
+    {:else if id === "templates"}
+        <Templates {active} {searchValue} />
+    {:else if id === "scripture"}
+        <Scripture {active} bind:searchValue />
+    {:else if id === "calendar"}
+        <Calendar {active} {searchValue} />
+    {:else if id === "functions"}
+        {#if active === "actions"}
+            <Actions {searchValue} />
+        {:else if active === "timer"}
+            <Timers {searchValue} />
+        {:else if active === "variables"}
             <Variables {searchValue} />
         {:else if active === "triggers"}
             <Triggers {searchValue} />
-        {:else}
-            <Overlays {active} {searchValue} />
+        {:else if active === "obs"}
+            <OBS {searchValue} />
         {/if}
-    {:else if id === "audio"}
-        <Audio {active} {searchValue} />
-    {:else if id === "effects"}
-        <Effects {active} {searchValue} />
-    {:else if id === "scripture"}
-        <Scripture {active} bind:searchValue bind:bibles />
-    {:else if id === "calendar"}
-        {#if active === "timer"}
-            <Timers {searchValue} />
-        {:else}
-            <Calendar {active} {searchValue} />
-        {/if}
-    {:else if id === "templates"}
-        <Templates {active} {searchValue} />
-        <!-- {:else if id === "web"}
-    <Web {active} {searchValue} /> -->
     {/if}
 </div>
 
 <style>
     .main {
+        position: relative;
+
         overflow-y: auto;
+
         display: flex;
         flex-direction: column;
-        background-color: var(--primary-darker);
         flex: 1;
+
+        background-color: var(--primary-darker);
+    }
+
+    .warning {
+        display: flex;
+        justify-content: space-between;
+        background-color: var(--primary-darkest);
     }
 </style>

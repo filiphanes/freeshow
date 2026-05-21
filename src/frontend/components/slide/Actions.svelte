@@ -1,58 +1,188 @@
 <script lang="ts">
-    import { dictionary, shows } from "../../stores"
+    import type { Output } from "../../../types/Output"
+    import type { Show, Slide } from "../../../types/Show"
+    import { activeShow, groups, outputs, showsCache, special, templates } from "../../stores"
+    import { newToast } from "../../utils/common"
+    import { translateText } from "../../utils/language"
+    import { getAccess } from "../../utils/profile"
+    import { actionData } from "../actions/actionData"
+    import { getActionName, getActionTriggerId } from "../actions/actions"
+    import { clone } from "../helpers/array"
     import { history } from "../helpers/history"
     import Icon from "../helpers/Icon.svelte"
+    import { getFirstActiveOutput } from "../helpers/output"
+    import { getLayoutRef } from "../helpers/show"
     import Button from "../inputs/Button.svelte"
 
+    export let slide: Slide
     export let columns: number
-    export let index: number
+    export let index = -1
+    export let templateId = ""
     export let actions: any
 
-    function changeSlideAction(id: string, save: boolean = true) {
+    $: showId = $activeShow?.id || ""
+    $: currentShow = $showsCache[showId] || {}
+
+    // highlight slide shortcut or next group shortcut
+    $: shortcut = getNextShortcut(actions, currentShow, getFirstActiveOutput($outputs))
+
+    function getNextShortcut(actions: any, show: Show, output?: Output & { id: string }): string {
+        // slide shortcut
+        if (actions.slide_shortcut?.key) return actions.slide_shortcut.key
+
+        // don't show group shortcut
+        if (!$special.groupShortcutPreview) return ""
+
+        const outSlide = output?.out?.slide
+        // output is from another show
+        if (outSlide && (outSlide?.id !== showId || outSlide?.layout !== show?.settings?.activeLayout)) return ""
+
+        const ref = getLayoutRef(showId)
+        const refSlide = ref[index] || {}
+        const currentSlideGroup = refSlide.type === "parent" ? show.slides?.[refSlide.id]?.globalGroup : null
+        const shortcut = ($groups[currentSlideGroup || ""]?.shortcut || "").toUpperCase()
+        if (!shortcut) return ""
+
+        // check if group shortcut is in use as slide shortcut
+        const isSlideShortcut = ref.some((a) => {
+            const slideShortcut = (a.data?.actions?.slide_shortcut?.key || "").toUpperCase()
+            return slideShortcut === shortcut
+        })
+        if (isSlideShortcut) return ""
+
+        // find first group after the current output index
+        const outIndex = outSlide?.index ?? -1
+        let nextGroupIndex = ref.findIndex((a) => {
+            let slideGroup = show.slides?.[a.id]?.globalGroup
+            if (!slideGroup || slideGroup !== currentSlideGroup) return false
+            return a.layoutIndex > outIndex
+        })
+
+        // if no group after index, get the first
+        if (nextGroupIndex === -1) {
+            nextGroupIndex = ref.findIndex((a) => {
+                let slideGroup = show.slides?.[a.id]?.globalGroup
+                return slideGroup && slideGroup === currentSlideGroup
+            })
+        }
+
+        if (nextGroupIndex !== index) return ""
+
+        return shortcut
+    }
+
+    function hasAccess() {
+        if (currentShow.locked) {
+            newToast("show.locked")
+            return false
+        }
+
+        if (slide?.locked) {
+            newToast("output.state_locked")
+            return false
+        }
+
+        const profile = getAccess("shows")
+        const readOnly = profile.global === "read" || profile[currentShow.category || ""] === "read"
+        if (readOnly) {
+            newToast("profile.locked")
+            return false
+        }
+
+        return true
+    }
+
+    function changeAction(id: string, save = true) {
+        if (!hasAccess()) return
+        if (templateId) return
+
         let data = { ...actions, [id]: actions[id] ? !actions[id] : true }
 
-        if (id === "outputStyle" && !data[id]) delete data.styleOutputs
+        if (id === "slide_shortcut") delete data[id]
+        else if (id === "outputStyle" && !data[id]) delete data.styleOutputs
 
         history({ id: "SHOW_LAYOUT", save, newData: { key: "actions", data, indexes: [index] } })
     }
 
-    // delete receiveMidi if it don't exists
-    // $: if (actions.receiveMidi && !$midiIn[actions.receiveMidi]) {
-    //     changeSlideAction("receiveMidi", false)
-    // }
+    function deleteSlideAction(e: any, id: string) {
+        if (!hasAccess()) return
+        e.preventDefault()
+
+        let slideActions = clone(actions.slideActions)
+        let actionIndex = slideActions.findIndex((a) => a.id === id || getActionTriggerId(a.triggers?.[0]) === id)
+        if (actionIndex < 0) return
+        slideActions.splice(actionIndex, 1)
+
+        if (templateId) {
+            let templateSettings = $templates[templateId]?.settings || {}
+            templateSettings.actions = slideActions
+
+            let newData = { key: "settings", data: templateSettings }
+            history({ id: "UPDATE", newData, oldData: { id: templateId }, location: { page: "drawer", id: "template_settings", override: `actions_${templateId}` } })
+
+            return
+        }
+
+        let data = { ...actions, slideActions }
+
+        history({ id: "SHOW_LAYOUT", newData: { key: "actions", data, indexes: [index] } })
+    }
 
     const actionsList = [
-        { id: "animate", title: $dictionary.popup?.animate, icon: "stars", white: true },
-        { id: "startShow", name: ({ id }) => $shows[id]?.name || "", title: $dictionary.preview?._start, icon: "showIcon", white: true },
-        { id: "trigger", title: $dictionary.popup?.trigger, icon: "trigger", white: true },
-        { id: "audioStream", title: $dictionary.popup?.audio_stream, icon: "audio_stream", white: true },
-        { id: "nextAfterMedia", title: $dictionary.actions?.next_after_media, icon: "forward", white: true },
-        { id: "startTimer", title: $dictionary.actions?.start_timer, icon: "timer", white: true },
-        { id: "outputStyle", title: $dictionary.actions?.change_output_style, icon: "styles", white: true },
-        { id: "receiveMidi", title: $dictionary.actions?.play_on_midi, icon: "play", white: true },
-        { id: "sendMidi", title: $dictionary.actions?.send_midi, icon: "music", white: true },
-        { id: "stopTimers", title: $dictionary.actions?.stop_timers, icon: "stop" },
-        { id: "clearBackground", title: $dictionary.clear?.background, icon: "background" },
-        { id: "clearOverlays", title: $dictionary.clear?.overlays, icon: "overlays" },
-        { id: "clearAudio", title: $dictionary.clear?.audio, icon: "audio" },
+        { id: "nextAfterMedia", title: translateText("actions.next_after_media"), icon: "forward" },
+        { id: "animate", title: translateText("popup.animate"), icon: "stars" }, // DEPRECATED!!
+        { id: "receiveMidi", title: translateText("actions.play_on_midi"), icon: "play" }
     ]
+
+    // WIP MIDI convert into new
+    // actionData get slideId and convert into slideActions
+
+    $: zoom = 4 / columns
+
+    function getCustomStyle(customData: { [key: string]: any }) {
+        if (!Object.keys(customData || {}).length) return ""
+        if (Object.entries(customData).find(([key, value]) => key === "overrideCategoryAction" && value === true)) return "color: #a1faff;"
+        return ""
+    }
 </script>
 
-<div class="icons" style="zoom: {4 / columns};">
+<div class="icons" style="zoom: {zoom};">
+    {#if shortcut}
+        <div class="button white" style="border: 1px solid var(--secondary);">
+            <Button style="padding: 3px;" redHover title={translateText("actions.remove: actions.play_with_shortcut")} {zoom} on:click={() => changeAction("slide_shortcut")}>
+                <p style="font-weight: bold;text-transform: capitalize;padding: 0 4px;font-size: 1.2em;">{shortcut}</p>
+            </Button>
+        </div>
+    {/if}
+
     {#each actionsList as action}
         {#if actions[action.id]}
-            <div>
-                <div class="button {action.white ? 'white' : ''}">
-                    <Button style="padding: 3px;" redHover title={$dictionary.actions?.remove + ": " + action.title} on:click={() => changeSlideAction(action.id)}>
-                        {#if action.name}
-                            <p>{action.name(actions[action.id])}</p>
-                        {/if}
-                        <Icon id={action.icon} size={0.9} white />
-                    </Button>
-                </div>
+            <div class="button white">
+                <Button style="padding: 3px;" redHover title={translateText(`actions.remove: ${action.title}`)} {zoom} on:click={() => changeAction(action.id)}>
+                    <Icon id={action.icon} size={0.9} white />
+                </Button>
             </div>
         {/if}
     {/each}
+
+    <!-- slide actions -->
+    {#if actions.slideActions?.length}
+        {#each actions.slideActions as action}
+            <!-- should be always just one trigger on each action when on a slide -->
+            {@const actionId = getActionTriggerId(action.triggers?.[0])}
+            {@const customData = actionData[actionId] || {}}
+            {@const actionValue = action?.actionValues?.[actionId] || action?.actionValues?.[action.triggers?.[0]] || {}}
+            {@const specialData = action?.customData?.[actionId] || action?.customData?.[action.triggers?.[0]] || {}}
+            {@const customName = getActionName(actionId, actionValue) || (action.name !== translateText(customData.name) ? action.name : "")}
+
+            <div class="button {customData.red ? '' : 'white'}">
+                <Button style="padding: 3px;{getCustomStyle(specialData)}" redHover title="{translateText('actions.remove')}: <b>{translateText(customData.name)}</b>{action.name && action.name !== translateText(customData.name) ? `\n${action.name}` : ''}" {zoom} on:click={(e) => deleteSlideAction(e, action.id || actionId)}>
+                    {#if customName}<p>{customName}</p>{/if}
+                    <Icon id={customData.icon || "actions"} size={0.9} white />
+                </Button>
+            </div>
+        {/each}
+    {/if}
 </div>
 
 <style>
@@ -61,7 +191,7 @@
         display: flex;
         flex-direction: column;
         position: absolute;
-        right: 2px;
+        inset-inline-end: 2px;
         z-index: 1;
         font-size: 0.9em;
 
@@ -85,7 +215,7 @@
     .button p {
         pointer-events: all;
         background-color: rgb(0 0 0 / 0.4);
-        padding-right: 5px;
+        padding-inline-end: 5px;
         font-size: 0.8em;
         font-weight: normal;
         max-width: 60px;

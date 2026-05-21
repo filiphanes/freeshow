@@ -1,0 +1,303 @@
+<script lang="ts">
+    import type { Item } from "../../../../types/Show"
+    import { activeEdit, activeShow, openToolsTab, os, outputs, showsCache, special, templates, variables } from "../../../stores"
+    import { translateText } from "../../../utils/language"
+    import { getAccess } from "../../../utils/profile"
+    import { deleteAction } from "../../helpers/clipboard"
+    import { history } from "../../helpers/history"
+    import { getExtension, getFileName, getMediaType } from "../../helpers/media"
+    import { getFirstActiveOutput, getOutputResolution, percentageStylePos } from "../../helpers/output"
+    import { getNumberVariables } from "../../helpers/showActions"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
+    import SlideItems from "../../slide/SlideItems.svelte"
+    import EditboxCropping from "./EditboxCropping.svelte"
+    import EditboxLines from "./EditboxLines.svelte"
+    import EditboxPlain from "./EditboxPlain.svelte"
+
+    export let item: Item | null
+    export let filter = ""
+    export let backdropFilter = ""
+    export let ref: {
+        type?: "show" | "overlay" | "template"
+        showId?: string
+        origin?: string
+        id: string
+    }
+    export let index: number
+    export let editIndex = -1
+    export let ratio = 1
+    export let plain = false
+    export let chordsMode = false
+    export let chordsAction = ""
+
+    let itemElem: HTMLElement | undefined
+    let cropElem: EditboxCropping | undefined
+    let cropActive = false
+    let cropPreview = { top: 0, right: 0, bottom: 0, left: 0 }
+
+    export let mouse: any = {}
+    function mousedown(e: any) {
+        if (e.target.closest(".chords") || e.target.closest(".editTools")) return
+        if (!e.target.closest(".line") && !e.target.closest(".square") && !e.target.closest(".rotate") && !e.target.closest(".radius") && !e.target.closest(".cropHandle") && !e.target.closest(".cropOverlay")) openToolsTab.set("text")
+
+        const rightClick: boolean = e.button === 2 || e.buttons === 2 || ($os.platform === "darwin" && e.ctrlKey)
+
+        activeEdit.update((ae) => {
+            if (rightClick) {
+                if (ae.items.includes(index)) return ae
+                ae.items = [index]
+
+                return ae
+            }
+
+            if (e.shiftKey) {
+                if (ae.items.includes(index)) {
+                    if (e.target.closest(".line")) ae.items.splice(ae.items.indexOf(index), 1)
+                } else {
+                    ae.items.push(index)
+                }
+
+                return ae
+            }
+
+            ae.items = [index]
+
+            return ae
+        })
+
+        let target = e.target.closest(".item")
+        if (!target) return
+
+        mouse = {
+            x: e.clientX,
+            y: e.clientY,
+            width: target.offsetWidth,
+            height: target.offsetHeight,
+            top: target.offsetTop,
+            left: target.offsetLeft,
+            offset: {
+                x: (e.clientX - e.target.closest(".slide").offsetLeft) / ratio - target.offsetLeft,
+                y: (e.clientY - e.target.closest(".slide").offsetTop) / ratio - target.offsetTop,
+                width: e.clientX / ratio - target.offsetWidth,
+                height: e.clientY / ratio - target.offsetHeight
+            },
+            item,
+            e: e,
+            rightClick
+        }
+    }
+
+    $: active = $activeShow?.id
+    $: layout = active && $showsCache[active]?.settings ? $showsCache[active].settings.activeLayout : ""
+    // $: slide = layout && $activeEdit.slide !== null && $activeEdit.slide !== undefined ? [$showsCache, GetLayoutRef(active, layout)[$activeEdit.slide].id][1] : null
+
+    function keydown(e: KeyboardEvent) {
+        if (cropElem?.handleKeydown(e)) return
+
+        if (e.key === "Escape") {
+            ;(document.activeElement as HTMLElement).blur()
+            window.getSelection()?.removeAllRanges()
+            if ($activeEdit.items.length) {
+                // give time so output don't clear
+                setTimeout(() => {
+                    activeEdit.update((a) => {
+                        a.items = []
+                        return a
+                    })
+                })
+            }
+        }
+
+        if (!$activeEdit.items.includes(index) || document.activeElement?.closest(".item") || document.activeElement?.closest("input")) return
+        // selected timeline actions
+        if (document.querySelector(".timeline-track .action-marker.selected")) return
+
+        if (e.key === "Backspace" || e.key === "Delete") {
+            // delete slide item using shortcut
+            deleteAction({ id: "item", data: { layout, slideId: ref.id } })
+        }
+    }
+
+    function deselect(e: any) {
+        if (e.target.closest(".menus") || e.target.closest(".popup") || e.target.closest(".drawer") || e.target.closest(".chords") || e.target.closest(".contextMenu") || e.target.closest(".editTools") || e.target.closest(".group") || e.target.closest(".timeline")) return
+
+        if (e.ctrlKey || e.metaKey || e.target.closest(".item") === itemElem || !$activeEdit.items.includes(index) || e.target.closest(".item")) return
+
+        if (window.getSelection()) window.getSelection()?.removeAllRanges()
+
+        // timeout to allow CSS to update selected items first if any
+        setTimeout(() => {
+            activeEdit.update((ae) => {
+                ae.items = []
+                return ae
+            })
+        })
+    }
+
+    $: customOutputId = getFirstActiveOutput($outputs)?.id || ""
+    function getCustomStyle(style: string, outputId = "") {
+        if (outputId) {
+            let outputResolution = getOutputResolution(outputId, $outputs, true)
+            style = percentageStylePos(style, outputResolution)
+        }
+
+        return style
+    }
+
+    // check if media fills entire slide, if it does it might be intended as a background
+    $: if (item?.type === "media") checkMedia()
+    else mediaShouldBeBackground = false
+    let mediaShouldBeBackground = false
+    function checkMedia() {
+        // WIP return if background exists
+        if (!item?.src || (ref?.type || "show") !== "show" || !item.style?.includes("width:1920") || !item.style?.includes("height:1080")) {
+            mediaShouldBeBackground = false
+            return
+        }
+
+        mediaShouldBeBackground = true
+    }
+    function convertToBackground() {
+        if (!item?.src) return
+
+        history({
+            id: "showMedia",
+            newData: { name: getFileName(item.src), path: item.src, type: getMediaType(getExtension(item.src)) },
+            location: { page: "show", show: { id: active || "" }, layout: $showsCache[active || ""]?.settings?.activeLayout, layoutSlide: $activeEdit.slide ?? -1 }
+        })
+
+        deleteAction({ id: "item", data: { layout, slideId: ref.id } })
+    }
+
+    function dblclick(e: MouseEvent) {
+        cropElem?.handleDblclick(e)
+    }
+
+    $: isDisabledVariable = item?.type === "variable" && $variables[item.variable?.id]?.enabled === false
+    // SHOW IS LOCKED FOR EDITING
+    let profile = getAccess("shows")
+    $: currentSlide = (ref.type || "show") === "show" ? $showsCache[active || ""]?.slides?.[ref.id] : null // WIP get group slide
+    $: isLocked = (ref.type || "show") !== "show" ? false : $showsCache[active || ""]?.locked || currentSlide?.locked || profile.global === "read" || profile[$showsCache[active || ""]?.category || ""] === "read"
+
+    // give CSS access to number variable values
+    $: cssVariables = getNumberVariables($variables)
+
+    const isOptimized = $special.optimizedMode
+    let previewCropType: "clip" | "ppt" = "clip"
+    $: previewCropType = item?.cropping?.type === "ppt" ? "ppt" : "clip"
+    $: previewItem = cropActive && item ? { ...item, cropping: { ...cropPreview, type: previewCropType } } : item
+
+    // fixed letter width
+    $: fixedWidth = item?.type === "timer" || item?.type === "clock" ? "font-feature-settings: 'tnum' 1;" : ""
+
+    $: noTextMode = ref?.type === "template" && $templates[ref?.id]?.settings?.mode === "item"
+</script>
+
+<!-- on:mouseup={() => chordUp({ showRef: ref, itemIndex: index, item })} -->
+<svelte:window on:mousedown={deselect} on:keydown={keydown} />
+
+<!-- WIP item with opacity 0 is completely hidden! Even the align elements! -->
+
+<!-- bind:offsetHeight={height}
+bind:offsetWidth={width} -->
+<div
+    bind:this={itemElem}
+    class={plain ? "editItem" : `editItem item ${isLocked ? "" : "context #edit_box"}`}
+    class:selected={$activeEdit.items.includes(index)}
+    class:decoration={item?.decoration}
+    class:isDisabledVariable
+    class:chords={chordsMode}
+    class:isOptimized
+    style="{plain ? 'width: 100%;' : `${getCustomStyle(item?.style || '', customOutputId)}; outline: ${3 / ratio}px solid rgb(255 255 255 / 0.2);z-index: ${index + 1 + ($activeEdit.items.includes(index) ? 100 : 0)};${filter ? 'filter: ' + filter + ';' : ''}${backdropFilter ? 'backdrop-filter: ' + backdropFilter + ';' : ''}`}{cssVariables}{fixedWidth}"
+    data-index={index}
+    on:mousedown={mousedown}
+    on:dblclick={dblclick}
+>
+    {#if !plain}
+        <EditboxPlain {item} {index} {ratio} hideMovebox={cropActive} />
+    {/if}
+    {#if item?.lines && !noTextMode}
+        <EditboxLines {item} {ref} {index} {editIndex} {plain} {chordsMode} {chordsAction} {isLocked} />
+    {:else if previewItem}
+        {#if previewItem.type === "media"}
+            <div class="mediaFrame" class:showOverflow={cropActive}>
+                <SlideItems item={previewItem} {ratio} {ref} {itemElem} slideIndex={$activeEdit.slide || 0} edit cropPreviewMode={cropActive} />
+            </div>
+        {:else}
+            <SlideItems item={previewItem} {ratio} {ref} {itemElem} slideIndex={$activeEdit.slide || 0} edit />
+        {/if}
+    {/if}
+
+    <EditboxCropping bind:this={cropElem} {item} {index} {ref} {itemElem} {plain} {isLocked} selected={$activeEdit.items.includes(index)} bind:cropActive bind:cropPreview />
+
+    {#if mediaShouldBeBackground}
+        <div class="tip">
+            {translateText("edit.media_item_tip")}
+            <MaterialButton style="color: var(--secondary);" on:click={convertToBackground}>{translateText("edit.convert_to_background")}</MaterialButton>
+        </div>
+    {/if}
+</div>
+
+<style>
+    .item {
+        outline: 5px solid rgb(255 255 255 / 0.2);
+        outline-offset: 0;
+        transition: background-color 0.3s;
+        /* cursor: text; */
+
+        /* media items */
+        overflow: hidden;
+    }
+    .item.selected {
+        overflow: visible;
+    }
+    .item.selected :global(.align) {
+        outline: 5px solid var(--secondary-opacity);
+        overflow: visible !important;
+    }
+
+    .item.chords {
+        overflow: visible;
+    }
+
+    .item.isDisabledVariable {
+        opacity: 0.5;
+    }
+
+    .item:hover {
+        /* .item:hover > .edit { */
+        background-color: rgb(255 255 255 / 0.05);
+        backdrop-filter: blur(20px);
+    }
+
+    .mediaFrame {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+    }
+    .mediaFrame.showOverflow {
+        overflow: visible;
+    }
+
+    .item.decoration:not(.selected) {
+        pointer-events: none;
+        outline: none !important;
+    }
+
+    .tip {
+        position: absolute;
+        top: 0;
+        left: 0;
+
+        background-color: rgb(0 0 0 / 0.5);
+        padding: 12px;
+
+        font-family: unset;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 0.32em;
+        text-shadow: none;
+
+        /* if parent is flipped, this will apply the same flip, so it's flipped back */
+        transform: inherit;
+    }
+</style>

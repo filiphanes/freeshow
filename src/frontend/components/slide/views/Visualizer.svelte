@@ -1,28 +1,53 @@
 <script lang="ts">
+    import { onDestroy } from "svelte"
     import { OUTPUT } from "../../../../types/Channels"
-    import { playingAudio, playingVideos, visualizerData } from "../../../stores"
+    import type { Item } from "../../../../types/Show"
+    import { AudioAnalyser } from "../../../audio/audioAnalyser"
+    import { currentWindow, visualizerData } from "../../../stores"
     import { send } from "../../../utils/request"
 
-    export let item: any
-    export let preview: boolean = false
-
-    $: console.log(item)
+    export let item: Item
+    export let preview = false
+    export let edit = false
 
     // visualizer
     // TODO: videos & mics
     // WIP circles: https://medium.com/swlh/building-a-audio-visualizer-with-javascript-324b8d420e7
-    let analysers: any[] = []
-    $: analysers = [...Object.values($playingAudio), ...$playingVideos]
 
-    $: if (($visualizerData || analysers?.length) && canvas && item) visualizer()
-    $: if (ctx && canvas && !$visualizerData) ctx.clearRect(0, 0, canvas.width, canvas.height)
+    let analysers = AudioAnalyser.getAnalysers()
 
-    let canvas: any = null
-    let ctx: any = null
+    let checkInterval: NodeJS.Timeout | null = null
+    if (preview && !$currentWindow && !analysers.length) {
+        checkInterval = setInterval(() => {
+            analysers = AudioAnalyser.getAnalysers()
+            if (analysers.length) clearInterval(checkInterval!)
+        }, 800)
+    }
+
+    $: if (($visualizerData || analysers?.length || edit) && canvas && item) visualizer()
+
+    let canvas: HTMLCanvasElement | undefined
+    let ctx: CanvasRenderingContext2D | null = null
     $: color = item.visualizer?.color || null
+    // WIP higher padding reduces total width
     $: padding = (item.visualizer?.padding || 0) - 0.5
 
+    onDestroy(() => {
+        if (!ctx || !canvas) return
+
+        // reset
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+        visualizerData.set(null)
+        if (preview) send(OUTPUT, ["VISUALIZER_DATA"], null)
+
+        if (rendering) cancelAnimationFrame(rendering)
+        if (checkInterval) clearInterval(checkInterval)
+    })
+
+    let rendering = 0
     function visualizer() {
+        if (!canvas || rendering) return
         if (!ctx) {
             canvas.width = window.innerWidth
             canvas.height = window.innerHeight
@@ -32,39 +57,53 @@
         let WIDTH = canvas.width
         let HEIGHT = canvas.height
 
-        let channels: any[] = []
-        let bufferLengths: any[] = []
-        let dataArrays: Uint8Array[] = []
+        let bufferLength = $visualizerData?.buffers ?? analysers[0]?.frequencyBinCount // 128
+        if (!bufferLength && edit) bufferLength = 128
+        if (!bufferLength) return
 
-        if (!$visualizerData) {
-            let leftChannels = analysers.map((a) => a.analyser?.left)
-            let rightChannels = analysers.map((a) => a.analyser?.right)
-            channels = [...leftChannels, ...rightChannels]
+        let barWidth = WIDTH / bufferLength - padding
 
-            // remove empty
-            channels = channels.filter((a) => a)
+        let x = 0
 
-            bufferLengths = channels.map((a) => a.frequencyBinCount)
-            dataArrays = bufferLengths.map((a) => new Uint8Array(a))
+        if (edit) {
+            // wait for color/padding to update
+            setTimeout(() => {
+                ctx!.clearRect(0, 0, WIDTH, HEIGHT)
+                for (let i = 0; i < bufferLength; i++) {
+                    const sineFactor = Math.abs(Math.sin((1 - i / bufferLength) * Math.PI * 8))
+                    const barHeight = HEIGHT * (0.5 * sineFactor + 0.5) * ((bufferLength - i) / bufferLength)
+                    generateBar({ height: barHeight, percentage: sineFactor })
+                }
+            })
+            return
         }
 
-        let bufferLength = $visualizerData ? $visualizerData.buffers : bufferLengths[0]
-        let barWidth = (WIDTH / bufferLength) * 1.3 - padding
-        let barHeight
+        // don't show highest frequenzies as they are often flat
+        barWidth *= 1.42 // 1.3
 
-        let count = 0
-        let x = 0
+        if ($currentWindow) {
+            if ($visualizerData) renderFrame()
+            return
+        }
+
+        const maxHeightValue = analysers[0]?.fftSize // 256
+        if (!maxHeightValue) return
+
+        const dataArrays: Uint8Array[] = analysers.map(() => new Uint8Array(bufferLength))
 
         function renderFrame() {
             if (!$visualizerData && !analysers?.length) {
-                ctx.clearRect(0, 0, WIDTH, HEIGHT)
-                if (preview) send(OUTPUT, ["VIZUALISER_DATA"], null)
+                ctx!.clearRect(0, 0, WIDTH, HEIGHT)
+                cancelAnimationFrame(rendering)
+                rendering = 0
+
+                if (preview) send(OUTPUT, ["VISUALIZER_DATA"], null)
 
                 return
             }
 
+            ctx!.clearRect(0, 0, WIDTH, HEIGHT)
             x = 0
-            ctx.clearRect(0, 0, WIDTH, HEIGHT)
 
             if ($visualizerData) {
                 let bars = $visualizerData.bars
@@ -75,39 +114,38 @@
                 return
             }
 
-            requestAnimationFrame(renderFrame)
+            // only get data in main window preview
+            if ($currentWindow || !preview) return
 
-            channels.map((a, i) => a.getByteFrequencyData(dataArrays[i]))
+            rendering = requestAnimationFrame(renderFrame)
 
-            let bars: any[] = []
-            for (let i = 0; i < bufferLengths[0]; i++) {
-                let dataAtIndex = dataArrays.map((a) => a[i])
-                let mid = dataAtIndex.reduce((value, data) => (value += data), 0) / dataAtIndex.length
-                barHeight = mid * 3
-                bars.push(barHeight)
+            // update frequency data for all analysers
+            analysers.forEach((analyser, i) => analyser.getByteFrequencyData(dataArrays[i]))
 
-                generateBar(barHeight)
+            let bars: { height: number; percentage: number }[] = []
+            for (let i = 0; i < bufferLength; i++) {
+                const sum = dataArrays[0][i] + dataArrays[1][i]
+                const percentage = Math.round(sum / dataArrays.length) / maxHeightValue
+                const barHeight = HEIGHT * percentage
+
+                bars.push({ height: barHeight, percentage })
+                generateBar({ height: barHeight, percentage })
             }
 
-            if (!preview) return
-
-            count++
-            if (count > 3) {
-                send(OUTPUT, ["VIZUALISER_DATA"], { bars, buffers: bufferLength })
-                count = 0
-            }
+            send(OUTPUT, ["VISUALIZER_DATA"], { bars, buffers: bufferLength })
         }
 
+        if (rendering) cancelAnimationFrame(rendering)
         renderFrame()
 
-        function generateBar(barHeight) {
-            // see values in AudioPreview.svelte
-            let r = barHeight * 1.5 + 5
-            let g = 5
-            let b = 150
+        function generateBar({ height, percentage }: { height: number; percentage: number }) {
+            const r = 255 * percentage
+            const g = 5
+            const b = 150
 
-            ctx.fillStyle = color || "rgb(" + r + "," + g + "," + b + ")"
-            ctx.fillRect(x, HEIGHT - barHeight, barWidth, barHeight)
+            if (color === "rgb(0 0 0 / 0)") color = ""
+            ctx!.fillStyle = color || `rgb(${r}, ${g}, ${b})`
+            ctx!.fillRect(x, HEIGHT - height, barWidth, height)
 
             x += barWidth + padding
         }

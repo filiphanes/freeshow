@@ -6,12 +6,12 @@
     export let h: number
     export let m: number
     export let s: number
-    export let seconds: boolean = true
+    export let seconds = true
 
     // define and set the initial tweening function
     let sweep = tweened(parseInt(((date.getTime() / 1000) % 60).toString()), {
         duration: 1000,
-        easing: linear, // elasticOut
+        easing: linear // elasticOut
     })
 
     // for a smooth transition between 59 and 0 seconds

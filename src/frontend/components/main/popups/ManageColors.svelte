@@ -1,22 +1,63 @@
 <script lang="ts">
+    import { onMount } from "svelte"
     import { special } from "../../../stores"
+    import { defaultColors, defaultGradients } from "../../helpers/color"
     import T from "../../helpers/T.svelte"
-    import Color from "../../inputs/Color.svelte"
+    import MaterialButton from "../../inputs/MaterialButton.svelte"
+    import MaterialColorInput from "../../inputs/MaterialColorInput.svelte"
 
-    function toggleColor(e, key = "customColors") {
-        let color = e.detail || e.target?.value
+    function changeColor(e, key = "") {
+        let color = e.detail || e.target?.value || ""
+
+        if (color.includes("gradient")) key = defaultGradients.find((a) => a.value === color) ? "disabledColorsGradient" : "customColorsGradient"
+        else key = defaultColors.find((a) => a.value === color) ? "disabledColors" : "customColors"
 
         special.update((a) => {
             let colors = a[key] || []
 
             let existing = colors.indexOf(color)
             if (existing >= 0) colors.splice(existing, 1)
-            else colors.push(color)
+            else {
+                colors.push(color)
+            }
 
             a[key] = colors
 
             return a
         })
+    }
+
+    let clipboardColors: string[] = []
+    onMount(() => {
+        navigator.clipboard
+            .readText()
+            .then((text) => {
+                text = text.trim().replaceAll('"', "").replaceAll("'", "").replace("[", "").replace("]", "")
+
+                const parts = text.includes("rgb") ? [text] : text.split(/[\s,]+/)
+                parts.forEach((c) => {
+                    c = c.trim()
+
+                    // let isHex = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)
+                    if (isValidColor(c) && !$special.customColors?.includes(c)) clipboardColors.push(c)
+                })
+
+                clipboardColors = [...new Set(clipboardColors)]
+            })
+            .catch((e) => {
+                console.warn("Could not read clipboard:", e)
+            })
+
+        function isValidColor(color) {
+            const s = new Option().style
+            s.color = color
+            return s.color !== ""
+        }
+    })
+
+    function addClipboardColors() {
+        clipboardColors.forEach((color) => changeColor({ detail: color }))
+        clipboardColors = []
     }
 </script>
 
@@ -24,14 +65,14 @@
     <p><T id="actions.click_disable" /></p>
 </div>
 
-<Color value="" on:input={(e) => toggleColor(e, "disabledColors")} visible showDisabled />
+<MaterialColorInput label="" value="" on:change={changeColor} alwaysVisible editMode />
 
-<Color value="" on:input={toggleColor} visible custom />
-
-<div class="color" style="margin-top: 10px;padding: 5px;">
-    <p><T id="actions.add_color" /></p>
-    <input class="colorpicker" type="color" on:change={toggleColor} />
-</div>
+<span style="font-size: 0;position: absolute;">{console.log(clipboardColors)}</span>
+{#if clipboardColors.length}
+    <MaterialButton variant="outlined" icon="paste" style="margin-top: 10px;" on:click={addClipboardColors}>
+        <T id="actions.paste" />
+    </MaterialButton>
+{/if}
 
 <style>
     .info {
@@ -40,28 +81,7 @@
 
         margin-bottom: 10px;
         font-style: italic;
-        opacity: 0.8;
-    }
-
-    .color {
-        border: 2px solid var(--primary-darker);
-        transition: background-color 0.2s;
-        position: relative;
-    }
-
-    input[type="color"] {
-        opacity: 0;
-        width: 100%;
-        border: none;
-    }
-
-    .color p {
-        position: absolute;
-        pointer-events: none;
-        border: none;
-        width: 100%;
-        justify-content: center;
-
-        text-align: center;
+        opacity: 0.7;
+        font-size: 0.9em;
     }
 </style>

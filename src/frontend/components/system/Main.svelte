@@ -2,11 +2,12 @@
     import { outputs, styles } from "../../stores"
     import { getResolution } from "../helpers/output"
 
-    export let slide: any = null
+    // export let slide: any = null
 
-    let width: number = 0
-    let height: number = 0
-    $: resolution = getResolution(slide?.settings?.resolution, { $outputs, $styles })
+    let width = 0
+    let height = 0
+    // slide?.settings?.resolution
+    $: resolution = getResolution(null, { $outputs, $styles })
 </script>
 
 <div class="main" bind:offsetWidth={width} bind:offsetHeight={height}>

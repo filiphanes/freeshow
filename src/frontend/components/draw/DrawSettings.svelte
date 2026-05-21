@@ -1,23 +1,24 @@
 <script lang="ts">
-    import { drawSettings, drawTool } from "../../stores"
+    import { drawSettings, drawTool, paintCache } from "../../stores"
     import Icon from "../helpers/Icon.svelte"
     import T from "../helpers/T.svelte"
     import { clone } from "../helpers/array"
-    import Button from "../inputs/Button.svelte"
-    import Checkbox from "../inputs/Checkbox.svelte"
-    import Color from "../inputs/Color.svelte"
-    import CombinedInput from "../inputs/CombinedInput.svelte"
-    import NumberInput from "../inputs/NumberInput.svelte"
-    import Panel from "../system/Panel.svelte"
+    import FloatingInputs from "../input/FloatingInputs.svelte"
+    import MaterialButton from "../inputs/MaterialButton.svelte"
+    import MaterialCheckbox from "../inputs/MaterialCheckbox.svelte"
+    import MaterialColorInput from "../inputs/MaterialColorInput.svelte"
+    import MaterialNumberInput from "../inputs/MaterialNumberInput.svelte"
+    import Tabs from "../main/Tabs.svelte"
+    import { clearDrawing } from "../output/clear"
 
-    const defaults: any = {
+    const defaults = {
         focus: {
             color: "#000000",
             opacity: 0.8,
             size: 300,
             radius: 50,
             glow: true,
-            hold: false,
+            hold: false
         },
         pointer: {
             color: "#FF0000",
@@ -26,13 +27,11 @@
             radius: 50,
             glow: false,
             hollow: true,
-            hold: false,
+            hold: false
         },
         zoom: {
-            opacity: 1,
-            size: 300,
-            radius: 50,
-            hold: false,
+            size: 200,
+            hold: false
         },
         particles: {
             color: "#1e1eb4",
@@ -41,102 +40,105 @@
             radius: 25,
             glow: false,
             hollow: false,
-            hold: false,
+            hold: false
         },
         fill: {
             color: "#000000",
             opacity: 0.8,
-            rainbow: false,
+            rainbow: false
         },
         paint: {
             color: "#ffffff",
             size: 10,
+            straight: false,
             // not saved:
             threed: false,
             dots: false,
-            hold: true, // always true
-        },
+            link_to_slide: false,
+            hold: true // always true
+        }
     }
 
-    const change = (e: any, key: string) => update(key, e.detail)
-    const check = (e: any, key: string) => update(key, e.target.checked)
+    $: tool = $drawTool
 
-    const update = (key: string, value: any) => {
-        drawSettings.update((ds: any) => {
-            ds[$drawTool][key] = value
-            return ds
+    const update = (value: any, key: string) => {
+        drawSettings.update((a) => {
+            a[tool][key] = value
+            return a
         })
     }
 
-    $: if (!Object.keys($drawSettings[$drawTool] || {}).length) reset()
     function reset() {
-        drawSettings.update((ds: any) => {
-            ds[$drawTool] = clone(defaults[$drawTool] || {})
-            return ds
+        drawSettings.update((a) => {
+            a[tool] = clone(defaults[tool] || {})
+            return a
+        })
+    }
+
+    // $: if (!Object.keys($drawSettings[tool] || {}).length) reset()
+    $: if (tool) adddMissingSettings()
+    function adddMissingSettings() {
+        drawSettings.update((a) => {
+            if (!a[tool]) a[tool] = clone(defaults[tool])
+            else {
+                Object.entries(defaults[tool]).forEach(([key, value]) => {
+                    if (a[tool][key] === undefined) a[tool][key] = value
+                })
+            }
+            return a
         })
     }
 </script>
 
-<div class="main border">
-    <Panel>
-        {#key $drawTool}
-            <h6 style="margin-top: 10px;"><T id="draw.{$drawTool}" /></h6>
-            {#key $drawSettings}
-                {#if $drawSettings[$drawTool]}
-                    {#each Object.entries($drawSettings[$drawTool]) as [key, value]}
-                        <CombinedInput>
-                            {#if key !== "clear" && (key !== "hold" || $drawTool !== "paint")}
-                                <p><T id="draw.{key}" /></p>
-                            {/if}
-                            {#if key === "color"}
-                                <Color {value} on:input={(e) => change(e, key)} style="width: 100%;" />
-                            {:else if (key !== "hold" || $drawTool !== "paint") && ["glow", "hold", "rainbow", "hollow", "dots", "threed"].includes(key)}
-                                <div class="alignRight">
-                                    <Checkbox checked={value} on:change={(e) => check(e, key)} />
-                                </div>
-                            {:else if key === "opacity"}
-                                <NumberInput {value} step={0.1} decimals={1} max={1} inputMultiplier={10} on:change={(e) => change(e, key)} />
-                            {:else if key === "radius"}
-                                <NumberInput {value} step={0.5} decimals={1} max={50} inputMultiplier={2} on:change={(e) => change(e, key)} />
-                            {:else if key !== "clear" && key !== "hold"}
-                                <NumberInput {value} min={1} max={2000} on:change={(e) => change(e, key)} />
-                            {:else}
-                                <div class="empty">
-                                    <!-- {key} -->
-                                </div>
-                            {/if}
-                        </CombinedInput>
-                    {/each}
-                {/if}
-            {/key}
-        {/key}
-    </Panel>
+<!-- {#if tool === "paint"}
+    <MaterialButton style="background-color: var(--primary-darker);" disabled={!$paintCache?.length} on:click={clearDrawing} red={!!$paintCache?.length}>
+        <Icon id="clear" size={1.2} white />
+        <T id="clear.drawing" />
+    </MaterialButton>
+{/if} -->
+
+<Tabs tabs={{ tool: { name: "draw." + tool, icon: tool } }} active="tool" />
+
+<div class="main">
+    {#each Object.entries($drawSettings[tool] || {}) as [key, value]}
+        {@const hidden = key === "hold" && tool === "paint"}
+
+        {#if !hidden}
+            {#if key === "color"}
+                <MaterialColorInput label="edit.color" {value} on:change={(e) => update(e.detail, key)} />
+            {:else if key === "opacity"}
+                <MaterialNumberInput label="edit.opacity" value={value * 10} min={1} max={10} on:change={(e) => update(e.detail / 10, key)} />
+            {:else if key === "radius"}
+                <MaterialNumberInput label="draw.radius" value={value * 2} max={100} on:change={(e) => update(e.detail / 2, key)} />
+            {:else if key === "size"}
+                <MaterialNumberInput label="edit.size" {value} min={1} max={2000} step={10} defaultValue={tool === "zoom" ? 100 : null} on:change={(e) => update(e.detail, key)} />
+            {:else if key !== "clear"}
+                <MaterialCheckbox label="draw.{key}" checked={value} on:change={(e) => update(e.detail, key)} />
+            {/if}
+        {/if}
+    {/each}
 </div>
 
-{#if $drawTool === "paint"}
-    <Button style="flex: 1;" on:click={() => update("clear", true)} dark center>
-        <Icon id="clear" right />
-        <T id="clear.all" />
-    </Button>
-{/if}
+<FloatingInputs>
+    {#if tool === "paint"}
+        <MaterialButton disabled={!$paintCache?.length} on:click={clearDrawing} red={!!$paintCache?.length}>
+            <Icon id="clear" size={1.2} white />
+            <T id="clear.drawing" />
+        </MaterialButton>
 
-<Button style="flex: 1;" on:click={reset} dark center>
-    <Icon id="reset" right />
-    <T id="actions.reset" />
-</Button>
+        <div class="divider" />
+    {/if}
+
+    <MaterialButton icon="reset" title="actions.reset" on:click={reset} />
+</FloatingInputs>
 
 <style>
     .main {
         display: flex;
         flex-direction: column;
-        overflow-y: auto;
-        overflow-x: hidden;
+        overflow: auto;
         height: 100%;
-        padding: 10px;
-    }
 
-    .empty {
-        background-color: var(--primary);
-        width: 100%;
+        padding: 10px;
     }
 </style>
